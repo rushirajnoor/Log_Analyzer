@@ -5,7 +5,7 @@ levels = ["INFO", "WARNING", "ERROR"]
 
 while True:
     level = random.choice(levels)
-    
+
     if level == "INFO":
         msg = "User login successful"
     elif level == "WARNING":
@@ -14,7 +14,7 @@ while True:
         msg = "Database connection failed"
 
     log = f"{level}: {msg}"
-    
+
     with open("app.log", "a") as f:
         f.write(log + "\n")
 
