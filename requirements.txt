@@ -3,3 +3,6 @@ uvicorn
 requests
 sqlalchemy
 psycopg2-binary
+scikit-learn
+pandas
+numpy
