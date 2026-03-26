@@ -38,6 +38,20 @@ def infer_cause(grouped):
     if grouped.empty:
         return "No clear root cause found"
 
+    # Priority weights
+    weights = {
+        "ERROR": 3,
+        "WARNING": 2,
+        "INFO": 1
+    }
+
+    grouped['score'] = grouped.apply(
+        lambda row: row['count'] * weights.get(row['level'], 1),
+        axis=1
+    )
+
+    grouped = grouped.sort_values(by='score', ascending=False)
+
     top = grouped.iloc[0]
     message = top['message'].lower()
 
@@ -49,6 +63,7 @@ def infer_cause(grouped):
         return "Authentication-related issue"
     else:
         return "Unknown issue"
+
 
 
 # --- STEP 5: Full RCA pipeline ---
