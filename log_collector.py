@@ -21,15 +21,24 @@ def follow(file):
 
 def parse_log(line):
     try:
-        level, message = line.strip().split(": ", 1)
+        level, rest = line.strip().split(": ", 1)
+
+        if rest.startswith("["):
+            service, message = rest.split("] ", 1)
+            service = service.strip("[]")
+        else:
+            service = "unknown"
+            message = rest
+
     except:
         level = "UNKNOWN"
+        service = "unknown"
         message = line.strip()
 
     return {
         "timestamp": time.time(),
         "level": level,
-        "service": "app",
+        "service": service,
         "message": message
     }
 
