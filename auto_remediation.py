@@ -1,11 +1,11 @@
 import subprocess
 import time
 
-from rca_engine import run_rca, get_latest_timestamp
+from rca_engine import run_rca, get_latest_timestamp, get_error_count
 from decision_engine import classify_risk, decide_action
 
 
-# --- CONTROL VARIABLES ---
+# --- CONTROL STATE ---
 last_action_time = 0
 last_action_cause = None
 COOLDOWN = 30  # seconds
@@ -15,18 +15,19 @@ def execute_action(action):
     if action["type"] == "command":
         print("Executing:", action["value"])
         subprocess.run(action["value"])
-
     elif action["type"] == "approval":
-        print("Suggested action:", action["value"])
-        choice = input("Approve? (y/n): ")
-
-        if choice.lower() == "y":
-            print("Approved (manual execution required)")
-        else:
-            print("Skipped")
-
+        print("Suggested:", action["value"])
     else:
         print("No action required")
+
+
+def check_if_resolved(before, after):
+    if after < before:
+        return "resolved"
+    elif after == before:
+        return "no_change"
+    else:
+        return "worsened"
 
 
 def main_loop():
@@ -49,31 +50,60 @@ def main_loop():
             print("\n--- RCA RESULT ---")
             print("Cause:", cause)
 
-            # --- Risk classification ---
             risk = classify_risk(cause)
-            print("Risk Level:", risk)
+            print("Risk:", risk)
 
-            # --- Decision ---
             action = decide_action(cause, risk)
             print("Decision:", action)
 
             current_time = time.time()
 
-            # --- PREVENT REPEATED ACTIONS ---
+            # --- HANDLE SAME ISSUE ---
             if cause == last_action_cause:
-                print("Same issue already handled, skipping action")
+                print("Same issue detected again")
 
-            # --- COOLDOWN CHECK ---
+                current_errors = get_error_count()
+
+                if current_errors == 0:
+                    print("Issue already resolved, skipping")
+                    time.sleep(10)
+                    continue
+                else:
+                    print("Issue persists, retrying action")
+
+            # --- COOLDOWN ---
             elif current_time - last_action_time < COOLDOWN:
-                print("Cooldown active, skipping action")
+                print("Cooldown active")
+                time.sleep(10)
+                continue
 
-            else:
-                if action["type"] != "none":
-                    execute_action(action)
-                    last_action_time = current_time
+            # --- EXECUTE ACTION ---
+            if action["type"] != "none":
+
+                before = get_error_count()
+                print("Errors before:", before)
+
+                execute_action(action)
+
+                last_action_time = current_time
+
+                # allow system to stabilize
+                time.sleep(5)
+
+                after = get_error_count()
+                print("Errors after:", after)
+
+                status = check_if_resolved(before, after)
+                print("Fix status:", status)
+
+                # --- UPDATE STATE CORRECTLY ---
+                if status == "resolved":
                     last_action_cause = cause
                 else:
-                    print("No action executed")
+                    last_action_cause = None
+
+            else:
+                print("No action")
 
             print("\nWaiting for next cycle...\n")
             time.sleep(10)

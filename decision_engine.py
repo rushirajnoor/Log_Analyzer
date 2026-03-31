@@ -1,43 +1,41 @@
 def classify_risk(cause):
-    """
-    Assign risk level based on inferred cause
-    """
 
-    if "Database connectivity issue" in cause:
+    if "Redis connectivity issue" in cause:
+        return "low"
+
+    elif "Database connectivity issue" in cause:
         return "low"
 
     elif "High memory usage" in cause:
         return "medium"
-
-    elif "Authentication" in cause:
-        return "zero"
 
     else:
         return "zero"
 
 
 def decide_action(cause, risk):
-    """
-    Decide what to do based on cause + risk
-    """
 
     if risk == "low":
-        # Safe to automate
+
+        if "Redis connectivity issue" in cause:
+            return {
+                "type": "command",
+                "value": ["docker", "restart", "redis"]
+            }
+
         if "Database connectivity issue" in cause:
             return {
                 "type": "command",
-                "value": ["docker", "restart", "log-container"]
+                "value": ["docker", "restart", "fastapi-app"]
             }
 
     elif risk == "medium":
-        # Needs approval
         return {
             "type": "approval",
-            "value": "Restart container due to high memory usage"
+            "value": "Investigate memory issue"
         }
 
-    else:
-        return {
-            "type": "none",
-            "value": None
-        }
+    return {
+        "type": "none",
+        "value": None
+    }
