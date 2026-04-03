@@ -1,29 +1,42 @@
 def classify_risk(cause):
 
-    if "Redis connectivity issue" in cause:
+    cause_lower = cause.lower()
+
+    if "no issue" in cause_lower:
+        return "zero"
+
+    if "redis" in cause_lower:
         return "low"
 
-    elif "Database connectivity issue" in cause:
+    if "database" in cause_lower:
         return "low"
 
-    elif "High memory usage" in cause:
+    if "memory" in cause_lower:
         return "medium"
 
-    else:
-        return "zero"
+    return "zero"
 
 
 def decide_action(cause, risk):
 
+    cause_lower = cause.lower()
+
+    # 🔴 HARD STOP if no issue
+    if "no issue" in cause_lower:
+        return {
+            "type": "none",
+            "value": None
+        }
+
     if risk == "low":
 
-        if "Redis connectivity issue" in cause:
+        if "redis" in cause_lower:
             return {
                 "type": "command",
                 "value": ["docker", "restart", "redis"]
             }
 
-        if "Database connectivity issue" in cause:
+        if "database" in cause_lower:
             return {
                 "type": "command",
                 "value": ["docker", "restart", "fastapi-app"]

@@ -1,0 +1,4 @@
+sudo systemctl start docker
+docker ps
+
+sudo systemctl start postgresql

@@ -5,10 +5,9 @@ from rca_engine import run_rca, get_latest_timestamp, get_error_count
 from decision_engine import classify_risk, decide_action
 
 
-# --- CONTROL STATE ---
 last_action_time = 0
 last_action_cause = None
-COOLDOWN = 30  # seconds
+COOLDOWN = 30
 
 
 def execute_action(action):
@@ -58,7 +57,7 @@ def main_loop():
 
             current_time = time.time()
 
-            # --- HANDLE SAME ISSUE ---
+            # 🔴 SAME ISSUE HANDLING
             if cause == last_action_cause:
                 print("Same issue detected again")
 
@@ -71,24 +70,30 @@ def main_loop():
                 else:
                     print("Issue persists, retrying action")
 
-            # --- COOLDOWN ---
+            # 🔴 COOLDOWN
             elif current_time - last_action_time < COOLDOWN:
                 print("Cooldown active")
                 time.sleep(10)
                 continue
 
-            # --- EXECUTE ACTION ---
+            # 🔴 EXECUTION
             if action["type"] != "none":
 
                 before = get_error_count()
+
+                # 🔴 SAFETY CHECK
+                if before == 0:
+                    print("No active errors, skipping action")
+                    time.sleep(10)
+                    continue
+
                 print("Errors before:", before)
 
                 execute_action(action)
 
                 last_action_time = current_time
 
-                # allow system to stabilize
-                time.sleep(5)
+                time.sleep(10)
 
                 after = get_error_count()
                 print("Errors after:", after)
@@ -96,7 +101,6 @@ def main_loop():
                 status = check_if_resolved(before, after)
                 print("Fix status:", status)
 
-                # --- UPDATE STATE CORRECTLY ---
                 if status == "resolved":
                     last_action_cause = cause
                 else:

@@ -1,14 +1,14 @@
 import subprocess
 import requests
-import json
 import time
 
 BACKEND_URL = "http://127.0.0.1:8000/logs"
 
 
 def stream_logs():
+    # 🔥 ONLY recent logs + follow live
     process = subprocess.Popen(
-        ["docker", "logs", "-f", "fastapi-app"],
+        ["docker", "logs", "-f", "--since=5s", "fastapi-app"],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True
@@ -45,6 +45,9 @@ if __name__ == "__main__":
     print("Starting log collector...")
 
     for log_line in stream_logs():
+        if not log_line:
+            continue  # skip empty lines
+
         log = parse_log(log_line)
         print(log)
         send_log(log)
