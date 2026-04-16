@@ -8,21 +8,26 @@ def infer_with_llm(logs_text):
     prompt = f"""
 You are an autonomous SRE agent.
 
-Analyze the logs and ALWAYS return:
+Analyze the logs and return STRICT JSON with:
 - cause: short root cause
-- steps: list of commands
+- service: one of [redis, fastapi, postgres, unknown]
+- steps: list of shell commands to fix the issue
 
 STRICT RULES:
 - If Redis issue → steps MUST include: docker restart redis
+- If FastAPI issue → steps MUST include: docker restart fastapi-app
+- If Postgres issue → steps MUST include: docker restart postgres
 - If system is healthy → steps = []
-- Output STRICT JSON ONLY
+- NEVER return empty steps if there is an error
+- Output ONLY valid JSON (no explanation)
 
 Logs:
 {logs_text}
 
-Output:
+Output format:
 {{
   "cause": "...",
+  "service": "...",
   "steps": ["cmd1"]
 }}
 """
@@ -40,30 +45,46 @@ Output:
 
         text = response.json()["response"].strip()
 
+        # --- Extract JSON safely ---
         start = text.find("{")
         end = text.rfind("}") + 1
+
+        if start == -1 or end == -1:
+            raise ValueError("No JSON found in LLM response")
 
         json_text = text[start:end]
         data = json.loads(json_text)
 
-        cause = data.get("cause", "Unknown")
+        # --- Extract fields ---
+        cause = data.get("cause", "Unknown issue")
+        service = data.get("service", "unknown")
         steps = data.get("steps", [])
 
-        # 🔥 FIXED FALLBACK (based on cause)
-        if not steps:
-            cause_lower = cause.lower()
+        # 🔥 HARD FALLBACK (critical for reliability)
+        cause_lower = cause.lower()
+        service_lower = service.lower()
 
-            if "redis" in cause_lower:
+        if not steps:
+            if "redis" in cause_lower or "redis" in service_lower:
                 steps = ["docker restart redis"]
+
+            elif "fastapi" in cause_lower or "fastapi" in service_lower:
+                steps = ["docker restart fastapi-app"]
+
+            elif "postgres" in cause_lower or "database" in cause_lower:
+                steps = ["docker restart postgres"]
 
         return {
             "cause": cause,
+            "service": service,
             "steps": steps
         }
 
     except Exception as e:
         print("LLM error:", e)
+
         return {
             "cause": "Unknown issue",
+            "service": "unknown",
             "steps": []
         }
