@@ -32,3 +32,6 @@ while True:
         logging.error(f"Heartbeat: Redis failure - {str(e)}")
 
     time.sleep(2)
+
+
+    

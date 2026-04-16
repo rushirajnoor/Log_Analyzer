@@ -2,73 +2,73 @@ import subprocess
 import time
 
 from rca_engine import run_rca, get_latest_timestamp, get_error_count
-from decision_engine import classify_risk, decide_action
 
-
-last_action_time = 0
-last_action_cause = None
 COOLDOWN = 30
+last_action_time = 0
+last_action_signature = None
+
+ALLOWED_COMMANDS = ["docker"]
 
 
-def execute_action(action):
-    if action["type"] == "command":
-        print("Executing:", action["value"])
-        subprocess.run(action["value"])
-    elif action["type"] == "approval":
-        print("Suggested:", action["value"])
-    else:
-        print("No action required")
+def execute_step(step):
+    parts = step.split()
 
+    if parts[0] not in ALLOWED_COMMANDS:
+        print("Blocked unsafe step:", step)
+        return
 
-def check_if_resolved(before, after):
-    if after < before:
-        return "resolved"
-    elif after == before:
-        return "no_change"
-    else:
-        return "worsened"
+    print("Executing step:", parts)
+    subprocess.run(parts)
 
 
 def main_loop():
-    global last_action_time, last_action_cause
+    global last_action_time, last_action_signature
 
-    print("Starting Auto-Remediation System...")
+    print("Starting Agentic Remediation System...")
 
     while True:
         try:
             ts = get_latest_timestamp()
 
             if ts is None:
-                print("No logs yet")
                 time.sleep(5)
                 continue
 
             result = run_rca(ts)
-            cause = result["inferred_cause"]
+
+            cause = result.get("inferred_cause", "Unknown")
+            steps = result.get("suggested_steps", [])   # 🔥 CORRECT KEY
 
             print("\n--- RCA RESULT ---")
             print("Cause:", cause)
+            print("Steps:", steps)
 
-            risk = classify_risk(cause)
-            print("Risk:", risk)
+            # 🔥 FINAL FALLBACK (CRITICAL FIX)
+            if not steps:
+                cause_lower = cause.lower()
 
-            action = decide_action(cause, risk)
-            print("Decision:", action)
+                if "redis" in cause_lower:
+                    steps = ["docker restart redis"]
+
+            if not steps:
+                print("No action needed")
+                time.sleep(10)
+                continue
 
             current_time = time.time()
 
+            action_signature = f"{cause}:{steps}"
+
             # 🔴 SAME ISSUE HANDLING
-            if cause == last_action_cause:
+            if action_signature == last_action_signature:
                 print("Same issue detected again")
 
-                current_errors = get_error_count()
-
-                if current_errors == 0:
+                if get_error_count() == 0:
                     print("Issue already resolved, skipping")
                     time.sleep(10)
                     continue
                 else:
-                    print("Issue persists, retrying action")
+                    print("Issue persists, retrying")
 
             # 🔴 COOLDOWN
             elif current_time - last_action_time < COOLDOWN:
@@ -76,38 +76,40 @@ def main_loop():
                 time.sleep(10)
                 continue
 
-            # 🔴 EXECUTION
-            if action["type"] != "none":
+            before = get_error_count()
 
-                before = get_error_count()
-
-                # 🔴 SAFETY CHECK
-                if before == 0:
-                    print("No active errors, skipping action")
-                    time.sleep(10)
-                    continue
-
-                print("Errors before:", before)
-
-                execute_action(action)
-
-                last_action_time = current_time
-
+            if before == 0:
+                print("No active errors, skipping")
                 time.sleep(10)
+                continue
 
-                after = get_error_count()
-                print("Errors after:", after)
+            print("Errors before:", before)
 
-                status = check_if_resolved(before, after)
-                print("Fix status:", status)
+            # 🔥 Execute steps
+            for step in steps:
+                execute_step(step)
+                time.sleep(5)
 
-                if status == "resolved":
-                    last_action_cause = cause
-                else:
-                    last_action_cause = None
+            last_action_time = current_time
 
+            # 🔥 Stabilization wait
+            time.sleep(10)
+
+            time.sleep(10)
+            after1 = get_error_count()
+
+            time.sleep(5)
+            after2 = get_error_count()
+
+            after = min(after1, after2)
+            print("Errors after:", after)
+
+            if after < before:
+                print("Fix successful")
+                last_action_signature = action_signature
             else:
-                print("No action")
+                print("Fix may have failed")
+                last_action_signature = None
 
             print("\nWaiting for next cycle...\n")
             time.sleep(10)

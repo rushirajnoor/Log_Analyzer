@@ -11,7 +11,6 @@ def get_latest_timestamp():
     return df['ts'][0]
 
 
-# 🔥 FIXED: Tight sliding window (recent logs only)
 def get_logs_around(timestamp):
     query = f"""
     SELECT *
@@ -35,31 +34,40 @@ def run_rca(timestamp):
     if df.empty:
         return {
             "top_patterns": [],
-            "inferred_cause": "No logs found"
+            "inferred_cause": "No logs found",
+            "suggested_steps": []
         }
 
     grouped = analyze_patterns(df)
 
-    # 🔥 ONLY ERROR LOGS TO LLM
+    # 🔥 Only ERROR logs
     error_logs = df[df['level'] == 'ERROR']
 
     if error_logs.empty:
         return {
             "top_patterns": grouped.head(5).to_dict(orient="records"),
-            "inferred_cause": "No issue detected"
+            "inferred_cause": "No issue detected",
+            "suggested_steps": []
         }
 
-    # 🔥 take most recent ERROR logs (not random top)
+    # 🔥 Use most recent logs
     error_logs = error_logs.sort_values(by="timestamp", ascending=False)
 
     top_logs = error_logs['message'].head(3).tolist()
     logs_text = "\n".join(top_logs)
 
-    cause = infer_with_llm(logs_text)
+    result = infer_with_llm(logs_text)
+
+    cause = result.get("cause", "Unknown issue")
+    steps = result.get("steps", [])
+
+    # 🔴 DEBUG (keep for now)
+    print("DEBUG steps from LLM:", steps)
 
     return {
         "top_patterns": grouped.head(5).to_dict(orient="records"),
-        "inferred_cause": cause
+        "inferred_cause": cause,
+        "suggested_steps": steps   # 🔥 CRITICAL KEY
     }
 
 
@@ -77,3 +85,8 @@ def get_error_count():
 if __name__ == "__main__":
     ts = get_latest_timestamp()
 
+    if ts is None:
+        print("No logs")
+    else:
+        result = run_rca(ts)
+        print(result)

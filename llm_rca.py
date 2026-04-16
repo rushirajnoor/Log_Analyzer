@@ -1,18 +1,30 @@
 import requests
+import json
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
 
 
 def infer_with_llm(logs_text):
     prompt = f"""
-You are an expert SRE system.
+You are an autonomous SRE agent.
 
-Analyze the logs and identify the root cause in ONE short sentence.
+Analyze the logs and ALWAYS return:
+- cause: short root cause
+- steps: list of commands
+
+STRICT RULES:
+- If Redis issue → steps MUST include: docker restart redis
+- If system is healthy → steps = []
+- Output STRICT JSON ONLY
 
 Logs:
 {logs_text}
 
-Root cause:
+Output:
+{{
+  "cause": "...",
+  "steps": ["cmd1"]
+}}
 """
 
     try:
@@ -23,11 +35,35 @@ Root cause:
                 "prompt": prompt,
                 "stream": False
             },
-            timeout=10
+            timeout=20
         )
 
-        return response.json()["response"].strip()
+        text = response.json()["response"].strip()
+
+        start = text.find("{")
+        end = text.rfind("}") + 1
+
+        json_text = text[start:end]
+        data = json.loads(json_text)
+
+        cause = data.get("cause", "Unknown")
+        steps = data.get("steps", [])
+
+        # 🔥 FIXED FALLBACK (based on cause)
+        if not steps:
+            cause_lower = cause.lower()
+
+            if "redis" in cause_lower:
+                steps = ["docker restart redis"]
+
+        return {
+            "cause": cause,
+            "steps": steps
+        }
 
     except Exception as e:
         print("LLM error:", e)
-        return "Unknown issue"
+        return {
+            "cause": "Unknown issue",
+            "steps": []
+        }
