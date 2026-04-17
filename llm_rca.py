@@ -6,29 +6,33 @@ OLLAMA_URL = "http://localhost:11434/api/generate"
 
 def infer_with_llm(logs_text):
     prompt = f"""
-You are an autonomous SRE agent.
+You are an SRE agent.
 
-Analyze the logs and return STRICT JSON with:
+Analyze logs and return a structured PLAN.
+
+Return STRICT JSON with:
 - cause: short root cause
-- service: one of [redis, fastapi, postgres, unknown]
-- steps: list of shell commands to fix the issue
+- service: affected service (redis / fastapi / postgres / unknown)
+- plan: list of steps
 
-STRICT RULES:
-- If Redis issue → steps MUST include: docker restart redis
-- If FastAPI issue → steps MUST include: docker restart fastapi-app
-- If Postgres issue → steps MUST include: docker restart postgres
-- If system is healthy → steps = []
-- NEVER return empty steps if there is an error
-- Output ONLY valid JSON (no explanation)
+Step types allowed:
+- "check_container <name>"
+- "restart_container <name>"
+- "noop"
+
+RULES:
+- If service is down → check_container first
+- Only restart if necessary
+- If no issue → plan = ["noop"]
 
 Logs:
 {logs_text}
 
-Output format:
+Output:
 {{
   "cause": "...",
   "service": "...",
-  "steps": ["cmd1"]
+  "plan": ["step1", "step2"]
 }}
 """
 
@@ -45,46 +49,20 @@ Output format:
 
         text = response.json()["response"].strip()
 
-        # --- Extract JSON safely ---
         start = text.find("{")
         end = text.rfind("}") + 1
-
-        if start == -1 or end == -1:
-            raise ValueError("No JSON found in LLM response")
-
-        json_text = text[start:end]
-        data = json.loads(json_text)
-
-        # --- Extract fields ---
-        cause = data.get("cause", "Unknown issue")
-        service = data.get("service", "unknown")
-        steps = data.get("steps", [])
-
-        # 🔥 HARD FALLBACK (critical for reliability)
-        cause_lower = cause.lower()
-        service_lower = service.lower()
-
-        if not steps:
-            if "redis" in cause_lower or "redis" in service_lower:
-                steps = ["docker restart redis"]
-
-            elif "fastapi" in cause_lower or "fastapi" in service_lower:
-                steps = ["docker restart fastapi-app"]
-
-            elif "postgres" in cause_lower or "database" in cause_lower:
-                steps = ["docker restart postgres"]
+        data = json.loads(text[start:end])
 
         return {
-            "cause": cause,
-            "service": service,
-            "steps": steps
+            "cause": data.get("cause", "Unknown"),
+            "service": data.get("service", "unknown"),
+            "plan": data.get("plan", [])
         }
 
     except Exception as e:
         print("LLM error:", e)
-
         return {
-            "cause": "Unknown issue",
+            "cause": "Unknown",
             "service": "unknown",
-            "steps": []
+            "plan": ["noop"]
         }

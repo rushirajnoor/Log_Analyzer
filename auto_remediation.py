@@ -1,43 +1,45 @@
 import subprocess
 import time
 
-from rca_engine import run_rca, get_latest_timestamp, get_error_count
+from rca_engine import run_rca, get_latest_timestamp
 
-COOLDOWN = 30
-last_action_time = 0
-last_action_signature = None
-
-# 🔒 Only allow safe commands
-ALLOWED_COMMANDS = {"docker"}
-
+print("RUNNING FILE:", __file__)
 
 # -----------------------------
-# Docker Helpers
+# Docker helpers
 # -----------------------------
 
 def get_all_containers():
     try:
-        result = subprocess.check_output(
+        out = subprocess.check_output(
             ["docker", "ps", "-a", "--format", "{{.Names}}"]
         ).decode().splitlines()
-        return result
+        return out
     except:
         return []
 
 
-def is_container_running(name):
+def is_running(container):
     try:
-        result = subprocess.check_output(
-            ["docker", "inspect", "-f", "{{.State.Running}}", name],
+        out = subprocess.check_output(
+            ["docker", "inspect", "-f", "{{.State.Running}}", container],
             stderr=subprocess.DEVNULL
         ).decode().strip()
-        return result == "true"
+        return out == "true"
     except:
         return False
 
 
-def filter_containers(containers):
-    # Only monitor your project services
+def restart(container):
+    print(f"Restarting {container}")
+    subprocess.run(["docker", "restart", container])
+
+
+# -----------------------------
+# Auto-discovery filter
+# -----------------------------
+
+def filter_project_containers(containers):
     keywords = ["redis", "fastapi", "postgres"]
 
     filtered = []
@@ -50,158 +52,79 @@ def filter_containers(containers):
     return filtered
 
 
+def check_and_fix_containers():
+    containers = get_all_containers()
+    containers = filter_project_containers(containers)
+
+    for c in containers:
+        if not is_running(c):
+            print(f"\n--- HEALTH CHECK ---")
+            print(f"{c} is DOWN → restarting")
+
+            restart(c)
+            time.sleep(3)
+
+
 # -----------------------------
-# Execution
+# RCA-based fallback
 # -----------------------------
 
-def execute_step(step):
-    parts = step.split()
-
-    if not parts:
-        return
-
-    if parts[0] not in ALLOWED_COMMANDS:
-        print("Blocked unsafe step:", step)
-        return
-
-    print("Executing:", parts)
-    subprocess.run(parts)
-
-
-def evaluate_fix(before):
-    time.sleep(10)
-    after1 = get_error_count()
-
-    time.sleep(5)
-    after2 = get_error_count()
-
-    after = min(after1, after2)
-
-    print("Errors after:", after)
-
-    if after < before:
-        return "resolved"
-    elif after == before:
-        return "no_change"
-    else:
-        return "worsened"
-
-
-def apply_fallback(cause, service, steps):
-    if steps:
-        return steps
-
+def fix_from_cause(cause):
     c = (cause or "").lower()
-    s = (service or "").lower()
 
-    if "redis" in c or "redis" in s:
-        return ["docker restart redis"]
+    if "redis" in c:
+        return "redis"
 
-    if "fastapi" in c or "fastapi" in s:
-        return ["docker restart fastapi-app"]
+    if "fastapi" in c:
+        return "fastapi-app"
 
     if "postgres" in c or "database" in c:
-        return ["docker restart postgres"]
+        return "postgres"
 
-    return []
+    return None
 
 
 # -----------------------------
 # MAIN LOOP
 # -----------------------------
 
-def main_loop():
-    global last_action_time, last_action_signature
-
-    print("Starting Auto-Remediation System (Auto-Discovery Enabled)...")
-
-    last_restart = {}
+def main():
+    print("Starting Auto-Remediation (Auto-Discovery Mode)...")
 
     while True:
         try:
-            # 🔥 AUTO-DISCOVERY HEALTH CHECK
-            containers = get_all_containers()
-            containers = filter_containers(containers)
+            # 🔥 1. Health check layer (works even without logs)
+            check_and_fix_containers()
 
-            for c in containers:
-                if not is_container_running(c):
-                    now = time.time()
-
-                    if c in last_restart and now - last_restart[c] < 20:
-                        continue
-
-                    print(f"\n--- HEALTH CHECK ---")
-                    print(f"{c} is DOWN → restarting")
-
-                    subprocess.run(["docker", "restart", c])
-                    last_restart[c] = now
-                    time.sleep(3)
-
-            # 🔥 RCA PART
+            # 🔥 2. RCA layer (log-based)
             ts = get_latest_timestamp()
 
             if ts is None:
+                print("No logs yet")
                 time.sleep(5)
                 continue
 
             result = run_rca(ts)
 
             cause = result.get("inferred_cause", "Unknown")
-            steps = result.get("suggested_steps", [])
-            service = result.get("affected_service", "unknown")
 
             print("\n--- RCA RESULT ---")
             print("Cause:", cause)
-            print("Service:", service)
-            print("Steps (LLM):", steps)
 
-            steps = apply_fallback(cause, service, steps)
-            print("Steps (final):", steps)
+            service = fix_from_cause(cause)
 
-            if not steps:
+            if not service:
                 print("No action needed")
                 time.sleep(10)
                 continue
 
-            now = time.time()
-            signature = f"{cause}:{steps}"
+            running = is_running(service)
+            print(f"{service} running:", running)
 
-            # Deduplication
-            if signature == last_action_signature:
-                if get_error_count() == 0:
-                    print("Issue already resolved, skipping")
-                    time.sleep(10)
-                    continue
+            print(f"{service} → restarting (safe recovery)")
+            restart(service)
 
-            elif now - last_action_time < COOLDOWN:
-                print("Cooldown active")
-                time.sleep(10)
-                continue
-
-            before = get_error_count()
-
-            if before == 0:
-                print("No active errors, skipping")
-                time.sleep(10)
-                continue
-
-            print("Errors before:", before)
-
-            for step in steps:
-                execute_step(step)
-                time.sleep(5)
-
-            last_action_time = now
-
-            status = evaluate_fix(before)
-            print("Fix status:", status)
-
-            if status == "resolved":
-                last_action_signature = signature
-            else:
-                last_action_signature = None
-
-            print("\nWaiting for next cycle...\n")
+            print("\nWaiting...\n")
             time.sleep(10)
 
         except Exception as e:
@@ -210,4 +133,4 @@ def main_loop():
 
 
 if __name__ == "__main__":
-    main_loop()
+    main()
