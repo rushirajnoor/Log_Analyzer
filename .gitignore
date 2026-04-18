@@ -1,2 +1,5 @@
 __pycache__
 app.log
+kubectl
+minikube-linux-amd64
+.venv/
