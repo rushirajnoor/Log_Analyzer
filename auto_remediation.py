@@ -9,14 +9,51 @@ engine = create_engine(
     "postgresql://loguser:password@localhost:5432/logdb"
 )
 
-DEPENDENCIES = {
-    "frontend": ["cartservice"],
-    "cartservice": ["redis-cart"],
-    "checkoutservice": ["paymentservice"],
-}
-
 LAST_RESTART={}
 RESTART_COOLDOWN=60
+
+DEPENDENCY_GRAPH = {
+    "frontend": [
+        "cartservice",
+        "productcatalogservice",
+        "recommendationservice"
+    ],
+
+    "cartservice": [
+        "redis-cart"
+    ],
+
+    "checkoutservice": [
+        "paymentservice",
+        "shippingservice",
+        "emailservice"
+    ],
+
+    "productcatalogservice": [],
+
+    "recommendationservice": [],
+
+    "paymentservice": [],
+
+    "shippingservice": [],
+
+    "emailservice": [],
+
+    "redis-cart": []
+}
+
+
+def get_root_dependency(service):
+
+    current = service
+
+    while (
+        current in DEPENDENCY_GRAPH
+        and len(DEPENDENCY_GRAPH[current]) > 0
+    ):
+        current = DEPENDENCY_GRAPH[current][0]
+
+    return current
 
 
 def log_remediation(service,cause,action,verification):
@@ -110,15 +147,29 @@ def restart(service,cause="health_check"):
         return False
 
 
+def get_all_deployments():
+    try:
+        out = subprocess.check_output(
+            [
+                "kubectl",
+                "get",
+                "deployments",
+                "-o",
+                "jsonpath={.items[*].metadata.name}"
+            ]
+        ).decode()
+
+        return out.split()
+
+    except:
+        return []
+
+
 def check_and_fix_services():
 
-    monitored=[
-        "frontend",
-        "cartservice",
-        "redis-cart"
-    ]
+    monitored = get_all_deployments()
 
-    now=time.time()
+    now = time.time()
 
     for svc in monitored:
 
@@ -126,17 +177,26 @@ def check_and_fix_services():
 
             if (
                 svc in LAST_RESTART and
-                now-LAST_RESTART[svc] < RESTART_COOLDOWN
+                now - LAST_RESTART[svc] < RESTART_COOLDOWN
             ):
-                print(f"{svc} restart cooldown active")
+
+                print(
+                    f"{svc} restart cooldown active"
+                )
+
                 continue
 
             print("\n--- HEALTH CHECK ---")
-            print(f"{svc} is DOWN → restarting")
+            print(
+                f"{svc} is DOWN → restarting"
+            )
 
-            restart(svc,"health_check_down")
+            restart(
+                svc,
+                "health_check_down"
+            )
 
-            LAST_RESTART[svc]=now
+            LAST_RESTART[svc] = now
 
             time.sleep(3)
 
@@ -182,9 +242,13 @@ def fix_from_cause(cause):
             print(
                 f"{service} depends on {deps[0]} → fixing dependency first"
             )
-            return deps[0]
+            return get_root_dependency(service)
 
     return service
+
+
+
+
 
 
 def main():
