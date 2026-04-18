@@ -133,9 +133,31 @@ def restart(service,cause="health_check"):
     else:
         print(f"Verification: {service} recovery failed")
 
+        print("Primary remediation failed")
+
         print(
-            f"ESCALATION: manual intervention needed for {service}"
+        "Trying secondary remediation: scale up"
         )
+
+        scaled = scale_up(service)
+
+        if not scaled:
+
+            print(
+                "Secondary remediation failed"
+            )
+
+            print(
+                "Trying tertiary remediation: rollback"
+            )
+
+            rolled_back = rollback(service)
+
+            if not rolled_back:
+
+                print(
+                    f"ESCALATION: manual intervention needed for {service}"
+                )
 
         log_remediation(
             service,
@@ -247,8 +269,86 @@ def fix_from_cause(cause):
     return service
 
 
+def scale_up(service):
+
+    print(
+        f"Scaling {service} to 2 replicas"
+    )
+
+    subprocess.run(
+        [
+            "kubectl",
+            "scale",
+            f"deployment/{service}",
+            "--replicas=2"
+        ]
+    )
+
+    time.sleep(10)
+
+    if is_service_running(service):
+
+        print(
+            f"Scale remediation successful for {service}"
+        )
+
+        log_remediation(
+            service,
+            "verification_failed",
+            "scale_up",
+            "success"
+        )
+
+        return True
+
+    else:
+
+        print(
+            f"Scale remediation failed for {service}"
+        )
+
+        return False
 
 
+def rollback(service):
+
+    print(
+        f"Trying rollback for {service}"
+    )
+
+    subprocess.run(
+        [
+            "kubectl",
+            "rollout",
+            "undo",
+            f"deployment/{service}"
+        ]
+    )
+
+    time.sleep(10)
+
+    if is_service_running(service):
+
+        print(
+            f"Rollback successful for {service}"
+        )
+
+        log_remediation(
+            service,
+            "scale_failed",
+            "rollback",
+            "success"
+        )
+
+        return True
+
+    else:
+
+        print(
+            f"Rollback failed for {service}"
+        )
+
+        return False
 
 
 def main():
