@@ -7,3 +7,5 @@ scikit-learn
 pandas
 numpy
 redis
+streamlit
+streamlit-autorefresh
