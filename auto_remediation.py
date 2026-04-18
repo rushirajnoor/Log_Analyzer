@@ -68,21 +68,31 @@ def check_and_fix_containers():
 # -----------------------------
 # RCA-based fallback
 # -----------------------------
-
 def fix_from_cause(cause):
     c = (cause or "").lower()
 
-    if "redis" in c:
+    # only strong explicit signals trigger action
+
+    if "redis down" in c:
         return "redis"
 
-    if "fastapi" in c:
+    if "cannot connect to redis" in c:
+        return "redis"
+
+    if "fastapi down" in c:
         return "fastapi-app"
 
-    if "postgres" in c or "database" in c:
-        return "postgres"
+    # vague symptoms should NOT auto-remediate
+    if "request errors" in c:
+        return None
+
+    if "potential service issue" in c:
+        return None
+
+    if "multiple service issue" in c:
+        return None
 
     return None
-
 
 # -----------------------------
 # MAIN LOOP
