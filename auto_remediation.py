@@ -79,6 +79,237 @@ def log_remediation(service,cause,action,verification):
         print("History logging failed:",e)
 
 
+
+def had_past_success(service):
+
+    try:
+
+        with engine.begin() as conn:
+
+            result = conn.execute(
+                text(
+                    """
+                    SELECT COUNT(*)
+                    FROM remediation_history
+                    WHERE service=:svc
+                    AND verification='success'
+                    """
+                ),
+                {
+                    "svc": service
+                }
+            )
+
+            count = result.scalar()
+
+            return count > 0
+
+    except:
+
+        return False
+
+
+
+def get_confidence(cause, service):
+
+    score = 0
+
+    c = (cause or "").lower()
+
+
+    # -------------------
+    # Signal 1:
+    # Cause strength
+    # -------------------
+
+    if (
+        "cannot connect to redis" in c
+        or "redis down" in c
+        or "service down" in c
+    ):
+        score += 4
+
+
+    if (
+        "request errors" in c
+    ):
+        score += 3
+
+
+    # -------------------
+    # Signal 2:
+    # Health evidence
+    # -------------------
+
+    if service and not is_service_running(service):
+
+        print(
+            "Confidence signal: service down"
+        )
+
+        score += 3
+
+
+    # -------------------
+    # Signal 3:
+    # Metrics anomalies
+    # -------------------
+
+    try:
+
+        out = subprocess.check_output(
+            [
+             "kubectl",
+             "get",
+             "pods"
+            ]
+        ).decode()
+
+        if "CrashLoopBackOff" in out:
+
+            print(
+              "Confidence signal: CrashLoopBackOff"
+            )
+
+            score += 3
+
+
+        if "OOMKilled" in out:
+
+            print(
+              "Confidence signal: OOMKilled"
+            )
+
+            score += 3
+
+    except:
+        pass
+
+
+    # -------------------
+    # Signal 4:
+    # Historical support
+    # -------------------
+
+    if service and had_past_success(service):
+
+        print(
+          "Confidence signal: past success"
+        )
+
+        score += 3
+
+
+    # -------------------
+    # Final mapping
+    # -------------------
+
+    print(
+       "Confidence score:",
+       score
+    )
+
+
+    if score >= 7:
+        return "HIGH"
+
+    elif score >= 3:
+        return "MEDIUM"
+
+    else:
+        return "LOW"
+
+
+    # ambiguous but somewhat meaningful
+    if (
+        "request errors" in c
+        or "multiple service issue" in c
+    ):
+        return "MEDIUM"
+
+
+    # vague / weak / unknown
+    return "LOW"
+
+
+def check_metrics():
+
+    print("\n--- METRICS CHECK ---")
+
+    # -------------------------
+    # 1. CPU / Memory
+    # -------------------------
+
+    try:
+
+        out = subprocess.check_output(
+            ["kubectl","top","pods"],
+            stderr=subprocess.DEVNULL
+        ).decode().splitlines()
+
+        for line in out[1:]:
+
+            parts = line.split()
+
+            if len(parts) < 3:
+                continue
+
+            pod = parts[0]
+
+            cpu = parts[1].replace("m","")
+            mem = parts[2].replace("Mi","")
+
+            try:
+                cpu=int(cpu)
+                mem=int(mem)
+            except:
+                continue
+
+            if cpu > 500:
+                print(
+                  f"HIGH CPU anomaly: {pod}"
+                )
+
+            if mem > 500:
+                print(
+                  f"HIGH MEMORY anomaly: {pod}"
+                )
+
+    except:
+        print(
+          "Metrics server unavailable"
+        )
+
+
+    # -------------------------
+    # 2. Pod status anomalies
+    # -------------------------
+
+    try:
+
+        out = subprocess.check_output(
+            [
+             "kubectl",
+             "get",
+             "pods"
+            ]
+        ).decode()
+
+        if "CrashLoopBackOff" in out:
+
+            print(
+             "ANOMALY: CrashLoopBackOff detected"
+            )
+
+        if "OOMKilled" in out:
+
+            print(
+             "ANOMALY: OOMKilled detected"
+            )
+
+    except:
+        pass
+
 def get_all_pods():
     try:
         out=subprocess.check_output(
@@ -359,6 +590,7 @@ def main():
 
         try:
 
+            check_metrics()
             check_and_fix_services()
 
             ts=get_latest_timestamp()
@@ -378,7 +610,15 @@ def main():
             print("\n--- RCA RESULT ---")
             print("Cause:",cause)
 
-            service=fix_from_cause(cause)
+            service = fix_from_cause(cause)
+            confidence = get_confidence(cause,service)
+
+            print(
+                "Confidence:",
+                confidence
+            )
+
+
 
             if not service:
                 print("No action needed")
