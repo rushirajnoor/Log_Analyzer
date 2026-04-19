@@ -12,6 +12,10 @@ engine = create_engine(
 LAST_RESTART={}
 RESTART_COOLDOWN=60
 
+ACTIVE_INCIDENTS = {}
+
+INCIDENT_TTL = 300
+
 DEPENDENCY_GRAPH = {
     "frontend": [
         "cartservice",
@@ -41,6 +45,57 @@ DEPENDENCY_GRAPH = {
 
     "redis-cart": []
 }
+
+
+def is_duplicate_incident(service, cause):
+
+    if not service:
+        return False
+
+    c = cause.lower()
+
+    if "request errors" in c:
+        cause_class = "request_errors"
+
+    elif "redis" in c:
+        cause_class = "redis_fault"
+
+    elif "service down" in c:
+        cause_class = "service_down"
+
+    else:
+        cause_class = "generic_fault"
+
+
+    fingerprint = (
+        service
+        + "|"
+        + cause_class
+    )
+
+    now = time.time()
+
+    if fingerprint in ACTIVE_INCIDENTS:
+
+        age = (
+            now
+            - ACTIVE_INCIDENTS[fingerprint]
+        )
+
+        if age < INCIDENT_TTL:
+
+            print(
+              "Duplicate incident detected"
+            )
+
+            return True
+
+
+    ACTIVE_INCIDENTS[
+      fingerprint
+    ] = now
+
+    return False
 
 
 def get_root_dependency(service):
@@ -141,7 +196,11 @@ def get_confidence(cause, service):
     # Health evidence
     # -------------------
 
-    if service and not is_service_running(service):
+    if (
+        service
+        and service != "unresolved"
+        and not is_service_running(service)
+    ):
 
         print(
             "Confidence signal: service down"
@@ -611,6 +670,14 @@ def main():
             print("Cause:",cause)
 
             service = fix_from_cause(cause)
+            
+            if not service:
+                service = "unresolved"
+            print(
+                "DEBUG service:",
+                service
+            )
+
             confidence = get_confidence(cause,service)
 
             print(
@@ -618,9 +685,23 @@ def main():
                 confidence
             )
 
+            if "no issue detected" not in cause.lower():
+
+                if is_duplicate_incident(
+                    service,
+                    cause
+                ):
+
+                    print(
+                    "Skipping duplicate incident"
+                    )
+
+                    time.sleep(10)
+
+                    continue
 
 
-            if not service:
+            if service == 'unresolved':
                 print("No action needed")
                 time.sleep(10)
                 continue
