@@ -16,6 +16,11 @@ ACTIVE_INCIDENTS = {}
 
 INCIDENT_TTL = 300
 
+def incident_key(service, cause):
+
+    return f"{service}:{cause}".lower()
+
+
 DEPENDENCY_GRAPH = {
     "frontend": [
         "cartservice",
@@ -46,25 +51,14 @@ DEPENDENCY_GRAPH = {
     "redis-cart": []
 }
 
-
 def is_duplicate_incident(service, cause):
 
     if not service:
         return False
 
-    c = cause.lower()
 
-    if "request errors" in c:
-        cause_class = "request_errors"
-
-    elif "redis" in c:
-        cause_class = "redis_fault"
-
-    elif "service down" in c:
-        cause_class = "service_down"
-
-    else:
-        cause_class = "generic_fault"
+    # use structured fault classifier
+    cause_class = classify_fault(cause)
 
 
     fingerprint = (
@@ -85,18 +79,17 @@ def is_duplicate_incident(service, cause):
         if age < INCIDENT_TTL:
 
             print(
-              "Duplicate incident detected"
+               "Duplicate incident detected"
             )
 
             return True
 
 
     ACTIVE_INCIDENTS[
-      fingerprint
+       fingerprint
     ] = now
 
     return False
-
 
 def get_root_dependency(service):
 
@@ -641,49 +634,229 @@ def rollback(service):
         return False
 
 
+def classify_fault(cause):
+
+    c = (cause or "").lower()
+
+    if (
+        "cannot connect to redis" in c
+        or "dependency" in c
+        or "redis down" in c
+    ):
+        return "dependency_failure"
+
+
+    if (
+        "high cpu" in c
+        or "heavy load" in c
+        or "oomkilled" in c
+    ):
+        return "resource_exhaustion"
+
+
+    if (
+        "rollout" in c
+        or "deployment failed" in c
+        or "config" in c
+    ):
+        return "deployment_fault"
+
+
+    if (
+        "dns" in c
+        or "network" in c
+    ):
+        return "network_fault"
+
+    
+    if (
+        "timeout" in c
+        or "endpoint unreachable" in c
+    ):
+        return "network_fault"
+
+
+    if (
+        "maintenance" in c
+    ):
+        return "service_maintenance"
+
+
+    if (
+        "request error" in c
+        or "unknown request error" in c
+    ):
+        return "dependency_failure"
+
+
+    return "unknown_fault"
+
+
+def prefer_scale_first(service):
+
+    try:
+
+        with engine.begin() as conn:
+
+            result = conn.execute(
+                text(
+                    """
+                    SELECT COUNT(*)
+                    FROM remediation_history
+                    WHERE service=:svc
+                    AND action LIKE '%restart%'
+                    AND verification='failed_escalated'
+                    """
+                ),
+                {
+                    "svc":service
+                }
+            )
+
+            failures = result.scalar()
+
+
+            if failures >= 2:
+
+                print(
+                  "Learning signal:"
+                  " restart often fails"
+                )
+
+                return True
+
+
+            return False
+
+    except:
+
+        return False
+
+
 def main():
 
-    print("Starting Dependency-Aware Auto-Remediation...")
+    print(
+      "Starting Dependency-Aware Auto-Remediation..."
+    )
 
     while True:
 
         try:
 
+            # -------------------
+            # Metrics layer
+            # -------------------
+
             check_metrics()
+
+
+            # -------------------
+            # Health layer
+            # -------------------
+
             check_and_fix_services()
 
-            ts=get_latest_timestamp()
+
+            # -------------------
+            # Log-based RCA
+            # -------------------
+
+            ts = get_latest_timestamp()
 
             if ts is None:
-                print("No logs yet")
+
+                print(
+                  "No logs yet"
+                )
+
                 time.sleep(5)
+
                 continue
 
-            result=run_rca(ts)
 
-            cause=result.get(
+            result = run_rca(ts)
+
+
+            cause = result.get(
                 "inferred_cause",
                 "Unknown"
             )
 
-            print("\n--- RCA RESULT ---")
-            print("Cause:",cause)
 
-            service = fix_from_cause(cause)
-            
+            print(
+              "\n--- RCA RESULT ---"
+            )
+
+            print(
+              "Cause:",
+              cause
+            )
+
+
+            # -------------------
+            # Fault classification
+            # -------------------
+
+            fault = classify_fault(
+                cause
+            )
+
+            print(
+                "Fault Class:",
+                fault
+            )
+
+
+            # -------------------
+            # Service resolution
+            # -------------------
+
+            service = fix_from_cause(
+                cause
+            )
+
+
             if not service:
+
                 service = "unresolved"
+
+
             print(
                 "DEBUG service:",
                 service
             )
 
-            confidence = get_confidence(cause,service)
+
+            # -------------------
+            # Confidence-aware gating
+            # -------------------
+
+            confidence = get_confidence(
+                cause,
+                service
+            )
+
 
             print(
-                "Confidence:",
-                confidence
+               "Confidence:",
+               confidence
             )
+
+
+            if confidence == "LOW":
+
+                print(
+                  "Low confidence -> no auto-remediation"
+                )
+
+                time.sleep(10)
+
+                continue
+
+
+            # -------------------
+            # Deduplication
+            # -------------------
 
             if "no issue detected" not in cause.lower():
 
@@ -693,7 +866,7 @@ def main():
                 ):
 
                     print(
-                    "Skipping duplicate incident"
+                       "Skipping duplicate incident"
                     )
 
                     time.sleep(10)
@@ -701,22 +874,64 @@ def main():
                     continue
 
 
-            if service == 'unresolved':
-                print("No action needed")
+            # -------------------
+            # Unresolved guard
+            # -------------------
+
+            if service == "unresolved":
+
+                print(
+                  "No action needed"
+                )
+
                 time.sleep(10)
+
                 continue
 
-            print(f"{service} → restarting (dependency-aware recovery)")
 
-            restart(service,cause)
+            # -------------------
+            # Remediation
+            # -------------------
 
-            print("\nWaiting...\n")
+            print(
+              f"{service} -> restarting "
+              "(dependency-aware recovery)"
+            )
+
+
+            if prefer_scale_first(service):
+
+                print(
+                    "Adaptive decision:"
+                    " skipping restart"
+                )
+
+                scale_up(service)
+            else:
+                restart(
+                    service,
+                    cause
+                )
+
+
+            print(
+              "\nWaiting...\n"
+            )
+
             time.sleep(10)
 
+
         except Exception as e:
-            print("Error:",e)
+
+            print(
+              "Error:",
+              e
+            )
+
             time.sleep(5)
 
 
-if __name__=="__main__":
+
+if __name__ == "__main__":
+
     main()
