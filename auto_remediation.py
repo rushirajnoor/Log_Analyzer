@@ -496,10 +496,21 @@ def check_and_fix_services():
                 f"{svc} is DOWN → restarting"
             )
 
-            restart(
-                svc,
-                "health_check_down"
-            )
+            if prefer_scale_first(svc):
+
+                print(
+                    "Adaptive decision:"
+                    " going directly to scale"
+                )
+
+                scale_up(svc)
+
+            else:
+
+                restart(
+                    svc,
+                    "health_check_down"
+                )
 
             LAST_RESTART[svc] = now
 
@@ -733,6 +744,48 @@ def prefer_scale_first(service):
         return False
 
 
+def prefer_scale_first(service):
+
+    try:
+
+        with engine.begin() as conn:
+
+            result = conn.execute(
+                text(
+                    """
+                    SELECT COUNT(*)
+                    FROM remediation_history
+                    WHERE service=:svc
+                    AND action LIKE '%restart%'
+                    AND verification='failed_escalated'
+                    """
+                ),
+                {
+                    "svc": service
+                }
+            )
+
+            failures = result.scalar()
+
+
+            if failures >= 1:
+
+                print(
+                  "Learning signal:"
+                  " restart previously failed"
+                )
+
+                return True
+
+
+            return False
+
+
+    except:
+
+        return False
+
+
 def main():
 
     print(
@@ -908,10 +961,21 @@ def main():
 
                 scale_up(service)
             else:
-                restart(
-                    service,
-                    cause
-                )
+                if prefer_scale_first(service):
+
+                    print(
+                        "Adaptive decision:"
+                        " going directly to scale"
+                    )
+
+                    scale_up(service)
+
+                else:
+
+                    restart(
+                        service,
+                        cause
+                    )
 
 
             print(
