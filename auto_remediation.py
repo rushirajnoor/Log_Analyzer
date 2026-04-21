@@ -9,6 +9,9 @@ engine = create_engine(
     "postgresql://loguser:password@localhost:5432/logdb"
 )
 
+CORRELATED_EVENTS = []
+CORRELATION_WINDOW = 120
+
 LAST_RESTART={}
 RESTART_COOLDOWN=60
 
@@ -547,21 +550,78 @@ def resolve_dependency(cause):
 
 def fix_from_cause(cause):
 
-    service=resolve_dependency(cause)
+    c = (cause or "").lower()
+
+
+    # -------------------
+    # Better cause mapping
+    # -------------------
+
+    if (
+        "redis" in c
+        or "cache" in c
+    ):
+        service = "redis-cart"
+
+
+    elif (
+        "frontend" in c
+        or "frontend requests" in c
+    ):
+        service = "frontend"
+
+
+    elif (
+        "cartservice" in c
+    ):
+        service = "cartservice"
+
+
+    elif (
+        "payment" in c
+    ):
+        service = "paymentservice"
+
+
+    elif (
+        "timeout" in c
+        or "backend not responding" in c
+    ):
+        service = "cartservice"
+
+
+    else:
+
+        # fallback to old resolver
+        service = resolve_dependency(
+            cause
+        )
+
 
     if not service:
         return None
 
+
+    # -------------------
+    # KEEP dependency logic
+    # -------------------
+
     for parent,deps in DEPENDENCIES.items():
 
-        if service==parent and deps:
+        if service == parent and deps:
+
             print(
-                f"{service} depends on {deps[0]} → fixing dependency first"
+               f"{service} depends on "
+               f"{deps[0]} "
+               "→ fixing dependency first"
             )
-            return get_root_dependency(service)
+
+            return get_root_dependency(
+                service
+            )
+
 
     return service
-
 
 def scale_up(service):
 
@@ -786,6 +846,55 @@ def prefer_scale_first(service):
         return False
 
 
+def check_incident_correlation(service,fault):
+
+    now = time.time()
+
+    CORRELATED_EVENTS.append(
+        (
+          now,
+          service,
+          fault
+        )
+    )
+
+    # keep only recent events
+    recent = []
+
+    for e in CORRELATED_EVENTS:
+
+        if (
+           now - e[0]
+           < CORRELATION_WINDOW
+        ):
+            recent.append(e)
+
+    CORRELATED_EVENTS[:] = recent
+
+
+    services = set(
+       e[1] for e in recent
+    )
+
+    faults = set(
+       e[2] for e in recent
+    )
+
+
+    if (
+       len(services) >= 2
+       and len(faults) >= 1
+    ):
+
+        print(
+          "Correlated multi-service incident detected"
+        )
+
+        return True
+
+
+    return False
+
 def main():
 
     print(
@@ -859,7 +968,6 @@ def main():
                 fault
             )
 
-
             # -------------------
             # Service resolution
             # -------------------
@@ -878,6 +986,21 @@ def main():
                 "DEBUG service:",
                 service
             )
+
+
+            if service != "unresolved":
+
+                correlated = check_incident_correlation(
+                    service,
+                    fault
+                )
+
+                if correlated:
+
+                    print(
+                        "Incident correlation active"
+                    )
+
 
 
             # -------------------

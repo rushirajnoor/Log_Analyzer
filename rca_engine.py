@@ -21,36 +21,108 @@ def get_logs_around(timestamp):
 
 
 def run_rca(timestamp):
+
     df = get_logs_around(timestamp)
 
-    print("Fetched rows:", len(df))
+    print(
+      "Fetched rows:",
+      len(df)
+    )
+
 
     if df.empty:
+
         return {
-            "inferred_cause": "No logs",
+            "inferred_cause":
+            "No logs"
         }
 
-    error_logs = df[df['level'] == 'ERROR']
 
-    if error_logs.empty:
+    # -------------------
+    # Use ERROR + WARNING
+    # -------------------
+
+    relevant_logs = df[
+        df["level"].isin(
+           ["ERROR","WARNING"]
+        )
+    ]
+
+
+    if relevant_logs.empty:
+
         return {
-            "inferred_cause": "No issue detected",
+            "inferred_cause":
+            "No issue detected"
         }
 
-    # take latest logs
-    error_logs = error_logs.sort_values(by="timestamp", ascending=False)
 
-    logs_text = "\n".join(error_logs['message'].head(3).tolist())
+    # -------------------
+    # Sort newest first
+    # -------------------
 
-    # 🔴 SAFE LLM CALL
+    relevant_logs = (
+        relevant_logs
+        .sort_values(
+           by="timestamp",
+           ascending=False
+        )
+    )
+
+
+    # -------------------
+    # Take richer context
+    # -------------------
+
+    top_logs = (
+        relevant_logs[
+            ["service","message"]
+        ]
+        .head(10)
+    )
+
+
+    # -------------------
+    # Service-aware context
+    # -------------------
+
+    logs_text = ""
+
+    for _, row in top_logs.iterrows():
+
+        logs_text += (
+            f"[{row['service']}] "
+            f"{row['message']}\n"
+        )
+
+
+    # -------------------
+    # Safe LLM call
+    # -------------------
+
     try:
-        result = infer_with_llm(logs_text)
-        cause = result.get("cause", "Unknown issue")
+
+        result = infer_with_llm(
+            logs_text
+        )
+
+        cause = result.get(
+            "cause",
+            "Unknown issue"
+        )
 
     except Exception as e:
-        print("LLM failed:", e)
+
+        print(
+           "LLM failed:",
+           e
+        )
+
         cause = "Unknown issue"
 
+
     return {
-        "inferred_cause": cause
+
+        "inferred_cause":
+        cause
     }
