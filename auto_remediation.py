@@ -4,7 +4,8 @@ from decision_engine import (
     is_duplicate_incident,
     prefer_scale_first,
     is_service_running,
-    fix_from_cause
+    fix_from_cause,
+    get_root_dependency
 )
 
 import subprocess
@@ -24,12 +25,26 @@ CORRELATION_WINDOW = 120
 LAST_RESTART={}
 RESTART_COOLDOWN=60
 
+ACTION_COOLDOWN = 120
+LAST_ACTION = {}
 
 def incident_key(service, cause):
 
     return f"{service}:{cause}".lower()
 
 
+def in_cooldown(service):
+
+    now = time.time()
+
+    last = LAST_ACTION.get(service, 0)
+
+    if now - last < ACTION_COOLDOWN:
+        print(f"{service} cooldown active")
+        return True
+
+    LAST_ACTION[service] = now
+    return False
 
 
 def log_remediation(service,cause,action,verification):
@@ -511,7 +526,13 @@ def main():
             service = fix_from_cause(
                 cause
             )
+            # 🔥 force root dependency resolution
+            if service:
+                root = get_root_dependency(service)
 
+                if root != service:
+                    print(f"{service} depends on {root} → fixing dependency first")
+                    service = root
 
             if not service:
 
@@ -572,17 +593,12 @@ def main():
 
             if "no issue detected" not in cause.lower():
 
-                if is_duplicate_incident(
-                    service,
-                    cause
-                ):
+                # 🔴 First observation → do nothing
+                if not is_duplicate_incident(service, cause):
 
-                    print(
-                       "Skipping duplicate incident"
-                    )
+                    print("First observation → waiting for confirmation")
 
-                    time.sleep(10)
-
+                    time.sleep(5)
                     continue
 
 
@@ -605,11 +621,15 @@ def main():
             # Remediation
             # -------------------
 
+            # 🔥 cooldown check BEFORE action
+            if in_cooldown(service):
+                time.sleep(5)
+                continue
+
             print(
               f"{service} -> restarting "
               "(dependency-aware recovery)"
             )
-
 
             if prefer_scale_first(service):
 
@@ -627,10 +647,7 @@ def main():
                     cause
                 )
 
-
-            print(
-              "\nWaiting...\n"
-            )
+            print("\nWaiting...\n")
 
             time.sleep(10)
 
