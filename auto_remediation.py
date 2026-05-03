@@ -1,3 +1,12 @@
+from decision_engine import (
+    classify_fault,
+    get_confidence,
+    is_duplicate_incident,
+    prefer_scale_first,
+    is_service_running,
+    fix_from_cause
+)
+
 import subprocess
 import time
 from sqlalchemy import create_engine, text
@@ -15,96 +24,12 @@ CORRELATION_WINDOW = 120
 LAST_RESTART={}
 RESTART_COOLDOWN=60
 
-ACTIVE_INCIDENTS = {}
-
-INCIDENT_TTL = 300
 
 def incident_key(service, cause):
 
     return f"{service}:{cause}".lower()
 
 
-DEPENDENCY_GRAPH = {
-    "frontend": [
-        "cartservice",
-        "productcatalogservice",
-        "recommendationservice"
-    ],
-
-    "cartservice": [
-        "redis-cart"
-    ],
-
-    "checkoutservice": [
-        "paymentservice",
-        "shippingservice",
-        "emailservice"
-    ],
-
-    "productcatalogservice": [],
-
-    "recommendationservice": [],
-
-    "paymentservice": [],
-
-    "shippingservice": [],
-
-    "emailservice": [],
-
-    "redis-cart": []
-}
-
-def is_duplicate_incident(service, cause):
-
-    if not service:
-        return False
-
-
-    # use structured fault classifier
-    cause_class = classify_fault(cause)
-
-
-    fingerprint = (
-        service
-        + "|"
-        + cause_class
-    )
-
-    now = time.time()
-
-    if fingerprint in ACTIVE_INCIDENTS:
-
-        age = (
-            now
-            - ACTIVE_INCIDENTS[fingerprint]
-        )
-
-        if age < INCIDENT_TTL:
-
-            print(
-               "Duplicate incident detected"
-            )
-
-            return True
-
-
-    ACTIVE_INCIDENTS[
-       fingerprint
-    ] = now
-
-    return False
-
-def get_root_dependency(service):
-
-    current = service
-
-    while (
-        current in DEPENDENCY_GRAPH
-        and len(DEPENDENCY_GRAPH[current]) > 0
-    ):
-        current = DEPENDENCY_GRAPH[current][0]
-
-    return current
 
 
 def log_remediation(service,cause,action,verification):
@@ -160,131 +85,6 @@ def had_past_success(service):
         return False
 
 
-
-def get_confidence(cause, service):
-
-    score = 0
-
-    c = (cause or "").lower()
-
-
-    # -------------------
-    # Signal 1:
-    # Cause strength
-    # -------------------
-
-    if (
-        "cannot connect to redis" in c
-        or "redis down" in c
-        or "service down" in c
-    ):
-        score += 4
-
-
-    if (
-        "request errors" in c
-    ):
-        score += 3
-
-
-    # -------------------
-    # Signal 2:
-    # Health evidence
-    # -------------------
-
-    if (
-        service
-        and service != "unresolved"
-        and not is_service_running(service)
-    ):
-
-        print(
-            "Confidence signal: service down"
-        )
-
-        score += 3
-
-
-    # -------------------
-    # Signal 3:
-    # Metrics anomalies
-    # -------------------
-
-    try:
-
-        out = subprocess.check_output(
-            [
-             "kubectl",
-             "get",
-             "pods"
-            ]
-        ).decode()
-
-        if "CrashLoopBackOff" in out:
-
-            print(
-              "Confidence signal: CrashLoopBackOff"
-            )
-
-            score += 3
-
-
-        if "OOMKilled" in out:
-
-            print(
-              "Confidence signal: OOMKilled"
-            )
-
-            score += 3
-
-    except:
-        pass
-
-
-    # -------------------
-    # Signal 4:
-    # Historical support
-    # -------------------
-
-    if service and had_past_success(service):
-
-        print(
-          "Confidence signal: past success"
-        )
-
-        score += 3
-
-
-    # -------------------
-    # Final mapping
-    # -------------------
-
-    print(
-       "Confidence score:",
-       score
-    )
-
-
-    if score >= 7:
-        return "HIGH"
-
-    elif score >= 3:
-        return "MEDIUM"
-
-    else:
-        return "LOW"
-
-
-    # ambiguous but somewhat meaningful
-    if (
-        "request errors" in c
-        or "multiple service issue" in c
-    ):
-        return "MEDIUM"
-
-
-    # vague / weak / unknown
-    return "LOW"
 
 
 def check_metrics():
@@ -365,28 +165,6 @@ def check_metrics():
     except:
         pass
 
-def get_all_pods():
-    try:
-        out=subprocess.check_output(
-            [
-                "kubectl",
-                "get",
-                "pods",
-                "-o",
-                "jsonpath={.items[*].metadata.name}"
-            ]
-        ).decode()
-        return out.split()
-    except:
-        return []
-
-
-def is_service_running(service_name):
-    pods=get_all_pods()
-    for p in pods:
-        if service_name in p:
-            return True
-    return False
 
 
 def restart(service,cause="health_check"):
@@ -520,109 +298,6 @@ def check_and_fix_services():
             time.sleep(3)
 
 
-def resolve_dependency(cause):
-
-    c=(cause or "").lower()
-
-    if "cartservice" in c:
-        return "cartservice"
-
-    if "redis down" in c:
-        return "redis-cart"
-
-    if "cannot connect to redis" in c:
-        return "redis-cart"
-
-    if "payment" in c:
-        return "paymentservice"
-
-    if "request errors" in c:
-        return None
-
-    if "multiple service issue" in c:
-        return None
-
-    if "potential service issue" in c:
-        return None
-
-    return None
-
-
-def fix_from_cause(cause):
-
-    c = (cause or "").lower()
-
-
-    # -------------------
-    # Better cause mapping
-    # -------------------
-
-    if (
-        "redis" in c
-        or "cache" in c
-    ):
-        service = "redis-cart"
-
-
-    elif (
-        "frontend" in c
-        or "frontend requests" in c
-    ):
-        service = "frontend"
-
-
-    elif (
-        "cartservice" in c
-    ):
-        service = "cartservice"
-
-
-    elif (
-        "payment" in c
-    ):
-        service = "paymentservice"
-
-
-    elif (
-        "timeout" in c
-        or "backend not responding" in c
-    ):
-        service = "cartservice"
-
-
-    else:
-
-        # fallback to old resolver
-        service = resolve_dependency(
-            cause
-        )
-
-
-    if not service:
-        return None
-
-
-    # -------------------
-    # KEEP dependency logic
-    # -------------------
-
-    for parent,deps in DEPENDENCIES.items():
-
-        if service == parent and deps:
-
-            print(
-               f"{service} depends on "
-               f"{deps[0]} "
-               "→ fixing dependency first"
-            )
-
-            return get_root_dependency(
-                service
-            )
-
-
-    return service
-
 def scale_up(service):
 
     print(
@@ -705,145 +380,6 @@ def rollback(service):
         return False
 
 
-def classify_fault(cause):
-
-    c = (cause or "").lower()
-
-    if (
-        "cannot connect to redis" in c
-        or "dependency" in c
-        or "redis down" in c
-    ):
-        return "dependency_failure"
-
-
-    if (
-        "high cpu" in c
-        or "heavy load" in c
-        or "oomkilled" in c
-    ):
-        return "resource_exhaustion"
-
-
-    if (
-        "rollout" in c
-        or "deployment failed" in c
-        or "config" in c
-    ):
-        return "deployment_fault"
-
-
-    if (
-        "dns" in c
-        or "network" in c
-    ):
-        return "network_fault"
-
-    
-    if (
-        "timeout" in c
-        or "endpoint unreachable" in c
-    ):
-        return "network_fault"
-
-
-    if (
-        "maintenance" in c
-    ):
-        return "service_maintenance"
-
-
-    if (
-        "request error" in c
-        or "unknown request error" in c
-    ):
-        return "dependency_failure"
-
-
-    return "unknown_fault"
-
-
-def prefer_scale_first(service):
-
-    try:
-
-        with engine.begin() as conn:
-
-            result = conn.execute(
-                text(
-                    """
-                    SELECT COUNT(*)
-                    FROM remediation_history
-                    WHERE service=:svc
-                    AND action LIKE '%restart%'
-                    AND verification='failed_escalated'
-                    """
-                ),
-                {
-                    "svc":service
-                }
-            )
-
-            failures = result.scalar()
-
-
-            if failures >= 2:
-
-                print(
-                  "Learning signal:"
-                  " restart often fails"
-                )
-
-                return True
-
-
-            return False
-
-    except:
-
-        return False
-
-
-def prefer_scale_first(service):
-
-    try:
-
-        with engine.begin() as conn:
-
-            result = conn.execute(
-                text(
-                    """
-                    SELECT COUNT(*)
-                    FROM remediation_history
-                    WHERE service=:svc
-                    AND action LIKE '%restart%'
-                    AND verification='failed_escalated'
-                    """
-                ),
-                {
-                    "svc": service
-                }
-            )
-
-            failures = result.scalar()
-
-
-            if failures >= 1:
-
-                print(
-                  "Learning signal:"
-                  " restart previously failed"
-                )
-
-                return True
-
-
-            return False
-
-
-    except:
-
-        return False
 
 
 def check_incident_correlation(service,fault):
@@ -1079,26 +615,17 @@ def main():
 
                 print(
                     "Adaptive decision:"
-                    " skipping restart"
+                    " going directly to scale"
                 )
 
                 scale_up(service)
+
             else:
-                if prefer_scale_first(service):
 
-                    print(
-                        "Adaptive decision:"
-                        " going directly to scale"
-                    )
-
-                    scale_up(service)
-
-                else:
-
-                    restart(
-                        service,
-                        cause
-                    )
+                restart(
+                    service,
+                    cause
+                )
 
 
             print(

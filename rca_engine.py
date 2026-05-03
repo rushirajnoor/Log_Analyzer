@@ -14,8 +14,7 @@ def get_logs_around(timestamp):
     query = f"""
     SELECT *
     FROM logs
-    WHERE to_timestamp(timestamp)
-    > NOW() - interval '30 seconds';
+    WHERE timestamp > EXTRACT(EPOCH FROM NOW() - interval '10 seconds');
     """
     return pd.read_sql(query, engine)
 
@@ -74,19 +73,41 @@ def run_rca(timestamp):
     # Take richer context
     # -------------------
 
-    top_logs = (
-        relevant_logs[
-            ["service","message"]
-        ]
-        .head(10)
-    )
 
+    top_logs = (
+        relevant_logs
+        .sort_values(by="timestamp", ascending=False)
+        .groupby("service", group_keys=False)
+        .head(2)
+        .head(10)
+        [["service", "message"]]
+    )
+    # -------------------
+    # Extract structured signals
+    # -------------------
+
+    error_count = len(relevant_logs)
+
+    services = relevant_logs["service"].value_counts().to_dict()
+
+    signals = []
+
+    if error_count > 20:
+        signals.append("HIGH_ERROR_RATE")
+
+    if any("redis" in s for s in services):
+        signals.append("REDIS_INVOLVED")
+
+    if any("frontend" in s for s in services):
+        signals.append("FRONTEND_INVOLVED")
+
+    signals_text = " | ".join(signals)
 
     # -------------------
     # Service-aware context
     # -------------------
 
-    logs_text = ""
+    logs_text = "Signals: " + signals_text + "\n\n"
 
     for _, row in top_logs.iterrows():
 
@@ -94,7 +115,6 @@ def run_rca(timestamp):
             f"[{row['service']}] "
             f"{row['message']}\n"
         )
-
 
     # -------------------
     # Safe LLM call
@@ -108,7 +128,7 @@ def run_rca(timestamp):
 
         cause = result.get(
             "cause",
-            "Unknown issue"
+            "Possible service failure or dependency issue"
         )
 
     except Exception as e:
@@ -118,7 +138,7 @@ def run_rca(timestamp):
            e
         )
 
-        cause = "Unknown issue"
+        cause = "Possible service failure or dependency issue"
 
 
     return {
