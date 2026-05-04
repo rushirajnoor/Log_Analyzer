@@ -5,7 +5,10 @@ from decision_engine import (
     prefer_scale_first,
     is_service_running,
     fix_from_cause,
-    get_root_dependency
+    get_root_dependency,
+    get_best_action,
+    select_root_cause,
+    DEPENDENCY_GRAPH
 )
 
 import subprocess
@@ -27,6 +30,8 @@ RESTART_COOLDOWN=60
 
 ACTION_COOLDOWN = 120
 LAST_ACTION = {}
+
+FAILURE_TRACKER = {}   # service -> first_seen_ts
 
 def incident_key(service, cause):
 
@@ -138,6 +143,8 @@ def mark_incident_resolved(service):
     except Exception as e:
         print("Incident resolution failed:", e)
 
+
+
 def had_past_success(service):
 
     try:
@@ -248,10 +255,11 @@ def check_metrics():
         pass
 
 
-
-def restart(service,cause="health_check"):
+def restart(service, cause="health_check"):
 
     print(f"Restarting {service}")
+
+    start_time = time.time()
 
     subprocess.run(
         [
@@ -264,10 +272,18 @@ def restart(service,cause="health_check"):
 
     time.sleep(10)
 
-    if is_service_running(service):
+    success = is_service_running(service)
+
+    recovery_time = time.time() - start_time
+
+    if success:
+
         print(f"Verification: {service} recovery successful")
 
         mark_incident_resolved(service)
+        # clear failure signal after recovery
+        if service in FAILURE_TRACKER:
+            del FAILURE_TRACKER[service]
 
         log_remediation(
             service,
@@ -276,42 +292,43 @@ def restart(service,cause="health_check"):
             "success"
         )
 
+        log_evaluation(
+            service,
+            cause,
+            "N/A",
+            "N/A",
+            "restart",
+            True,
+            recovery_time
+        )
+
         return True
 
     else:
+
         print(f"Verification: {service} recovery failed")
 
         print("Primary remediation failed")
 
-        print(
-        "Trying secondary remediation: scale up"
-        )
+        print("Trying secondary remediation: scale up")
 
         scaled = scale_up(service)
-
-        if not scaled:
-
-            print(
-                "Secondary remediation failed"
-            )
-
-            print(
-                "Trying tertiary remediation: rollback"
-            )
-
-            rolled_back = rollback(service)
-
-            if not rolled_back:
-
-                print(
-                    f"ESCALATION: manual intervention needed for {service}"
-                )
 
         log_remediation(
             service,
             cause,
             f"restart {service}",
             "failed_escalated"
+        )
+
+        log_evaluation(
+            service,
+            cause,
+            "N/A",
+            "N/A",
+            "restart",
+            False,
+            recovery_time
         )
 
         return False
@@ -384,9 +401,9 @@ def check_and_fix_services():
 
 def scale_up(service):
 
-    print(
-        f"Scaling {service} to 2 replicas"
-    )
+    print(f"Scaling {service} to 2 replicas")
+
+    start_time = time.time()
 
     subprocess.run(
         [
@@ -399,11 +416,18 @@ def scale_up(service):
 
     time.sleep(10)
 
-    if is_service_running(service):
+    success = is_service_running(service)
+
+    recovery_time = time.time() - start_time
+
+    if success:
 
         print(f"Scale remediation successful for {service}")
 
         mark_incident_resolved(service)
+        # clear failure signal after recovery
+        if service in FAILURE_TRACKER:
+            del FAILURE_TRACKER[service]
 
         log_remediation(
             service,
@@ -412,12 +436,30 @@ def scale_up(service):
             "success"
         )
 
+        log_evaluation(
+            service,
+            "N/A",
+            "N/A",
+            "N/A",
+            "scale_up",
+            True,
+            recovery_time
+        )
+
         return True
 
     else:
 
-        print(
-            f"Scale remediation failed for {service}"
+        print(f"Scale remediation failed for {service}")
+
+        log_evaluation(
+            service,
+            "N/A",
+            "N/A",
+            "N/A",
+            "scale_up",
+            False,
+            recovery_time
         )
 
         return False
@@ -425,9 +467,9 @@ def scale_up(service):
 
 def rollback(service):
 
-    print(
-        f"Trying rollback for {service}"
-    )
+    print(f"Trying rollback for {service}")
+
+    start_time = time.time()
 
     subprocess.run(
         [
@@ -440,11 +482,18 @@ def rollback(service):
 
     time.sleep(10)
 
-    if is_service_running(service):
+    success = is_service_running(service)
+
+    recovery_time = time.time() - start_time
+
+    if success:
 
         print(f"Rollback successful for {service}")
 
         mark_incident_resolved(service)
+        # clear failure signal after recovery
+        if service in FAILURE_TRACKER:
+            del FAILURE_TRACKER[service]
 
         log_remediation(
             service,
@@ -453,12 +502,30 @@ def rollback(service):
             "success"
         )
 
+        log_evaluation(
+            service,
+            "N/A",
+            "N/A",
+            "N/A",
+            "rollback",
+            True,
+            recovery_time
+        )
+
         return True
 
     else:
 
-        print(
-            f"Rollback failed for {service}"
+        print(f"Rollback failed for {service}")
+
+        log_evaluation(
+            service,
+            "N/A",
+            "N/A",
+            "N/A",
+            "rollback",
+            False,
+            recovery_time
         )
 
         return False
@@ -516,6 +583,35 @@ def check_incident_correlation(service,fault):
     return False
 
 
+# -----------------------------
+# Evaluation logging
+# -----------------------------
+
+def log_evaluation(service, cause, fault, confidence, action, success, recovery_time):
+
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO evaluation_logs
+                    (service, cause, fault_class, confidence, action, success, recovery_time)
+                    VALUES
+                    (:s, :c, :f, :conf, :a, :succ, :rt)
+                    """
+                ),
+                {
+                    "s": service,
+                    "c": cause,
+                    "f": fault,
+                    "conf": confidence,
+                    "a": action,
+                    "succ": success,
+                    "rt": recovery_time
+                }
+            )
+    except Exception as e:
+        print("Evaluation logging failed:", e)
 
 
 def main():
@@ -631,6 +727,31 @@ def main():
                     )
 
 
+            # -------------------
+            # Causal correlation (time + deps)
+            # -------------------
+            correlated = select_root_cause(
+                service,
+                FAILURE_TRACKER,
+                DEPENDENCY_GRAPH
+            )
+
+            if correlated != service:
+                print(f"Correlation override: {service} → {correlated}")
+                service = correlated
+
+
+            # -------------------
+            # Track first-seen failure (do NOT overwrite)
+            # -------------------
+            if (
+                service
+                and service != "unresolved"
+                and "no issue detected" not in cause.lower()
+            ):
+                if service not in FAILURE_TRACKER:
+                    FAILURE_TRACKER[service] = time.time()
+
 
             # -------------------
             # Confidence-aware gating
@@ -717,21 +838,15 @@ def main():
               "(dependency-aware recovery)"
             )
 
-            if prefer_scale_first(service):
+            best_action = get_best_action(service)
 
-                print(
-                    "Adaptive decision:"
-                    " going directly to scale"
-                )
+            print(f"Adaptive decision: {best_action}")
 
+            if best_action == "scale_up":
                 scale_up(service)
 
             else:
-
-                restart(
-                    service,
-                    cause
-                )
+                restart(service, cause)
 
             print("\nWaiting...\n")
 

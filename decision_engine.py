@@ -41,6 +41,46 @@ DEPENDENCY_GRAPH = {
 }
 
 
+def get_best_action(service):
+
+    try:
+        with engine.begin() as conn:
+
+            result = conn.execute(
+                text(
+                    """
+                    SELECT action, COUNT(*) as cnt
+                    FROM remediation_history
+                    WHERE service=:svc
+                    AND verification='success'
+                    GROUP BY action
+                    """
+                ),
+                {"svc": service}
+            ).fetchall()
+
+            if not result:
+                return "restart"
+
+            action_counts = {
+                row[0]: row[1] for row in result
+            }
+
+            best_action = max(
+                action_counts,
+                key=action_counts.get
+            )
+
+            if "scale" in best_action:
+                return "scale_up"
+
+            if "restart" in best_action:
+                return "restart"
+
+            return "restart"
+
+    except:
+        return "restart"
 
 
 def get_all_pods():
@@ -488,3 +528,29 @@ def fix_from_cause(cause):
 
 
     return service
+
+def select_root_cause(service, failure_tracker, dependency_graph):
+    """
+    Choose earliest failing service along the dependency chain.
+    If dependencies failed earlier than the current service,
+    pick the earliest among them.
+    """
+
+    # if unknown service or no deps → return as is
+    deps = dependency_graph.get(service, [])
+    if not deps:
+        return service
+
+    # include self + its direct dependencies
+    candidates = [service] + deps
+
+    earliest_service = service
+    earliest_time = failure_tracker.get(service, float("inf"))
+
+    for s in candidates:
+        t = failure_tracker.get(s)
+        if t is not None and t < earliest_time:
+            earliest_time = t
+            earliest_service = s
+
+    return earliest_service
