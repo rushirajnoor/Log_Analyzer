@@ -69,7 +69,74 @@ def log_remediation(service,cause,action,verification):
     except Exception as e:
         print("History logging failed:",e)
 
+# -----------------------------
+# Incident lifecycle functions
+# -----------------------------
 
+def create_incident_if_not_exists(service, cause, fault):
+
+    try:
+        with engine.begin() as conn:
+
+            result = conn.execute(
+                text(
+                    """
+                    SELECT id FROM incidents
+                    WHERE service=:s
+                    AND status='active'
+                    LIMIT 1
+                    """
+                ),
+                {"s": service}
+            ).fetchone()
+
+            if result:
+                # already active
+                return
+
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO incidents
+                    (service, cause, fault_class, status)
+                    VALUES (:s, :c, :f, 'active')
+                    """
+                ),
+                {
+                    "s": service,
+                    "c": cause,
+                    "f": fault
+                }
+            )
+
+            print(f"[INCIDENT] Created for {service}")
+
+    except Exception as e:
+        print("Incident creation failed:", e)
+
+
+def mark_incident_resolved(service):
+
+    try:
+        with engine.begin() as conn:
+
+            conn.execute(
+                text(
+                    """
+                    UPDATE incidents
+                    SET status='resolved',
+                        resolved_at=NOW()
+                    WHERE service=:s
+                    AND status='active'
+                    """
+                ),
+                {"s": service}
+            )
+
+            print(f"[INCIDENT] Resolved for {service}")
+
+    except Exception as e:
+        print("Incident resolution failed:", e)
 
 def had_past_success(service):
 
@@ -199,6 +266,8 @@ def restart(service,cause="health_check"):
 
     if is_service_running(service):
         print(f"Verification: {service} recovery successful")
+
+        mark_incident_resolved(service)
 
         log_remediation(
             service,
@@ -332,9 +401,9 @@ def scale_up(service):
 
     if is_service_running(service):
 
-        print(
-            f"Scale remediation successful for {service}"
-        )
+        print(f"Scale remediation successful for {service}")
+
+        mark_incident_resolved(service)
 
         log_remediation(
             service,
@@ -373,9 +442,9 @@ def rollback(service):
 
     if is_service_running(service):
 
-        print(
-            f"Rollback successful for {service}"
-        )
+        print(f"Rollback successful for {service}")
+
+        mark_incident_resolved(service)
 
         log_remediation(
             service,
@@ -445,6 +514,9 @@ def check_incident_correlation(service,fault):
 
 
     return False
+
+
+
 
 def main():
 
@@ -569,6 +641,20 @@ def main():
                 service
             )
 
+            # -------------------
+            # Incident tracking (create)
+            # -------------------
+
+            if (
+                service != "unresolved"
+                and "no issue detected" not in cause.lower()
+                and confidence != "LOW"
+            ):
+                create_incident_if_not_exists(
+                    service,
+                    cause,
+                    fault
+                )
 
             print(
                "Confidence:",
