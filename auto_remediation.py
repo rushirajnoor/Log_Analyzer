@@ -8,7 +8,8 @@ from decision_engine import (
     get_root_dependency,
     get_best_action,
     select_root_cause,
-    DEPENDENCY_GRAPH
+    DEPENDENCY_GRAPH,
+    resolve_final_service
 )
 
 import subprocess
@@ -640,6 +641,7 @@ def log_evaluation(service, cause, fault, confidence, action, success, recovery_
     except Exception as e:
         print("Evaluation logging failed:", e)
 
+
 def main():
 
     print("Starting Dependency-Aware Auto-Remediation...")
@@ -685,83 +687,18 @@ def main():
             trace(f"Fault classified as → {fault}")
 
             # -------------------
-            # Service resolution
+            # Unified service resolution (Phase 11)
             # -------------------
-            service = fix_from_cause(cause)
-
-            # -------------------
-            # Detect external case
-            # -------------------
-            c = (cause or "").lower()
-
-            external_issue = False
-
-            if (
-                "metadata" in c
-                or "169.254" in c
-                or "dns" in c
-                or "external" in c
-                or "connection refused" in c
-                or "connection error" in c
-                or "unable to connect" in c
-            ):
-                external_issue = True
-
-
-
-            trace(f"Initial service from cause mapping → {service}")
-
-            # -------------------
-            # Dependency resolution
-            # -------------------
-
-            if not service:
-                service = "unresolved"
-
-            elif external_issue:
-                trace("Dependency resolution skipped due to external issue")
-
-            else:
-                root = get_root_dependency(service)
-
-                if root != service:
-                    print(f"{service} depends on {root} → fixing dependency first")
-                    trace(f"Dependency override → {service} → {root}")
-                    service = root
-
-
-            print("DEBUG service:", service)
-            trace(f"After dependency resolution → {service}")
-
-
-
-            # -------------------
-            # Correlation (incident-level)
-            # -------------------
-            if service != "unresolved":
-                correlated_flag = check_incident_correlation(service, fault)
-                if correlated_flag:
-                    print("Incident correlation active")
-                    trace(f"Incident correlation signal detected for {service}")
-
-            # -------------------
-            # Causal correlation (time + deps)
-            # -------------------
-            correlated = select_root_cause(
-                service,
+            service, decision_trace = resolve_final_service(
                 cause,
                 FAILURE_TRACKER,
                 DEPENDENCY_GRAPH
             )
 
-            if correlated != service:
-                print(f"Correlation override: {service} → {correlated}")
-                trace(f"Causal correlation override → {service} → {correlated}")
-                service = correlated
-            else:
-                trace(f"Causal correlation kept service → {service}")
+            print("DEBUG service:", service)
 
-            trace(f"Final service after correlation → {service}")
+            for step in decision_trace:
+                trace(step)
 
             # -------------------
             # Track first-seen failure
@@ -782,19 +719,7 @@ def main():
             print("Confidence:", confidence)
             trace(f"Confidence decision → {confidence}")
 
-            # -------------------
-            # Deduplication
-            # -------------------
-            if "no issue detected" not in cause.lower():
-
-                if not is_duplicate_incident(service, cause):
-                    print("First observation → waiting for confirmation")
-                    trace("Dedup: first observation → waiting (no action)")
-                    time.sleep(5)
-                    continue
-                else:
-                    trace("Dedup: confirmed incident → proceeding")
-
+            
             # -------------------
             # Confidence gate
             # -------------------
@@ -803,6 +728,20 @@ def main():
                 trace("Confidence LOW → skipping remediation")
                 time.sleep(10)
                 continue
+            
+            # -------------------
+            # Deduplication
+            # -------------------
+            if "no issue detected" not in cause.lower():
+
+                if not is_duplicate_incident(service, cause) and "no logs" not in cause.lower():
+                    print("First observation → waiting for confirmation")
+                    trace("Dedup: first observation → waiting (no action)")
+                    time.sleep(5)
+                    continue
+                else:
+                    trace("Dedup: confirmed incident → proceeding")
+
 
             # -------------------
             # Incident tracking

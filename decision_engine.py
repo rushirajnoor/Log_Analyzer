@@ -546,6 +546,71 @@ def fix_from_cause(cause):
 
     return service
 
+
+def resolve_final_service(cause, failure_tracker, dependency_graph):
+
+    trace_steps = []
+
+    c = (cause or "").lower()
+
+    # -------------------
+    # STEP 1: initial mapping
+    # -------------------
+    service = fix_from_cause(cause)
+    trace_steps.append(f"Initial mapping → {service}")
+
+    if not service:
+        return "unresolved", trace_steps
+
+    # -------------------
+    # STEP 2: external issue detection
+    # -------------------
+    external_issue = False
+
+    if (
+        "metadata" in c
+        or "169.254" in c
+        or "dns" in c
+        or "external" in c
+        or "connection refused" in c
+        or "connection error" in c
+        or "unable to connect" in c
+    ):
+        external_issue = True
+        trace_steps.append("External issue detected → skipping dependency")
+
+    # -------------------
+    # STEP 3: dependency resolution
+    # -------------------
+    if not external_issue:
+
+        root = get_root_dependency(service)
+
+        if root != service:
+            trace_steps.append(f"Dependency override → {service} → {root}")
+            service = root
+
+    # -------------------
+    # STEP 4: correlation override
+    # -------------------
+    correlated = select_root_cause(
+        service,
+        cause,
+        failure_tracker,
+        dependency_graph
+    )
+
+    if correlated != service:
+        trace_steps.append(f"Correlation override → {service} → {correlated}")
+        service = correlated
+    else:
+        trace_steps.append(f"Correlation kept → {service}")
+
+    # -------------------
+    # FINAL
+    # -------------------
+    return service, trace_steps
+
 def select_root_cause(service,cause, failure_tracker, dependency_graph):
     
     # 🔥 ignore correlation if cause is not dependency-related to graph
