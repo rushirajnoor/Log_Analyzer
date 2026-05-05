@@ -16,27 +16,21 @@ DEPENDENCY_GRAPH = {
         "productcatalogservice",
         "recommendationservice"
     ],
-
-    "cartservice": [
-        "redis-cart"
-    ],
-
+    "cartservice": ["redis-cart"],
     "checkoutservice": [
         "paymentservice",
         "shippingservice",
-        "emailservice"
+        "emailservice",
+        "cartservice"
     ],
-
-    "productcatalogservice": [],
-
-    "recommendationservice": [],
-
     "paymentservice": [],
-
     "shippingservice": [],
-
     "emailservice": [],
-
+    "productcatalogservice": [],
+    "recommendationservice": [],
+    "currencyservice": [],
+    "adservice": [],
+    "loadgenerator": [],
     "redis-cart": []
 }
 
@@ -453,6 +447,19 @@ def fix_from_cause(cause):
 
     c = (cause or "").lower()
 
+    # -------------------
+    # External / network issues (DO NOT force dependency)
+    # -------------------
+    if (
+        "metadata" in c
+        or "169.254" in c
+        or "external" in c
+        or "dns" in c
+        or "network" in c
+    ):
+        print("External issue detected → skipping dependency resolution")
+        return "frontend"
+
 
     # -------------------
     # Better cause mapping
@@ -469,7 +476,9 @@ def fix_from_cause(cause):
         "frontend" in c
         or "frontend requests" in c
     ):
-        service = "frontend"
+        # 🔥 force consistent path: frontend → cartservice
+        print("Frontend issue → routing to cartservice first")
+        service = "cartservice"
 
 
     elif (
@@ -490,11 +499,13 @@ def fix_from_cause(cause):
     ):
         service = "cartservice"
 
+
     elif (
         "frontend failing" in c
         or "frontend requests are failing" in c
     ):
         service = "frontend"
+
 
     else:
 
@@ -509,48 +520,64 @@ def fix_from_cause(cause):
 
 
     # -------------------
-    # KEEP dependency logic
+    # Apply dependency ONLY for real dependency cases
     # -------------------
 
-    for parent,deps in DEPENDENCY_GRAPH.items():
+    if (
+        "dependency" in c
+        or "redis" in c
+        or "timeout" in c
+    ):
 
-        if service == parent and deps:
+        for parent, deps in DEPENDENCY_GRAPH.items():
 
-            print(
-               f"{service} depends on "
-               f"{deps[0]} "
-               "→ fixing dependency first"
-            )
+            if service == parent and deps:
 
-            return get_root_dependency(
-                service
-            )
+                print(
+                   f"{service} depends on "
+                   f"{deps[0]} "
+                   "→ fixing dependency first"
+                )
+
+                return get_root_dependency(
+                    service
+                )
 
 
     return service
 
-def select_root_cause(service, failure_tracker, dependency_graph):
-    """
-    Choose earliest failing service along the dependency chain.
-    If dependencies failed earlier than the current service,
-    pick the earliest among them.
-    """
-
-    # if unknown service or no deps → return as is
-    deps = dependency_graph.get(service, [])
-    if not deps:
+def select_root_cause(service,cause, failure_tracker, dependency_graph):
+    
+    # 🔥 ignore correlation if cause is not dependency-related to graph
+    if "metadata" in service or "169.254" in service:
+        return service
+    
+    if "metadata" in cause or "external" in cause:
         return service
 
-    # include self + its direct dependencies
-    candidates = [service] + deps
+    visited = set()
+    queue = [service]
 
     earliest_service = service
     earliest_time = failure_tracker.get(service, float("inf"))
 
-    for s in candidates:
-        t = failure_tracker.get(s)
+    while queue:
+
+        current = queue.pop(0)
+
+        if current in visited:
+            continue
+
+        visited.add(current)
+
+        t = failure_tracker.get(current)
+
         if t is not None and t < earliest_time:
             earliest_time = t
-            earliest_service = s
+            earliest_service = current
+
+        # traverse deeper dependencies
+        deps = dependency_graph.get(current, [])
+        queue.extend(deps)
 
     return earliest_service

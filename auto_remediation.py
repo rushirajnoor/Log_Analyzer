@@ -33,6 +33,9 @@ LAST_ACTION = {}
 
 FAILURE_TRACKER = {}   # service -> first_seen_ts
 
+def trace(msg):
+    print(f"[TRACE] {msg}")
+
 def incident_key(service, cause):
 
     return f"{service}:{cause}".lower()
@@ -174,8 +177,6 @@ def had_past_success(service):
         return False
 
 
-
-
 def check_metrics():
 
     print("\n--- METRICS CHECK ---")
@@ -187,7 +188,7 @@ def check_metrics():
     try:
 
         out = subprocess.check_output(
-            ["kubectl","top","pods"],
+            ["kubectl", "top", "pods"],
             stderr=subprocess.DEVNULL
         ).decode().splitlines()
 
@@ -200,29 +201,45 @@ def check_metrics():
 
             pod = parts[0]
 
-            cpu = parts[1].replace("m","")
-            mem = parts[2].replace("Mi","")
+            # 🔥 extract service name
+            service = pod.split("-")[0]
+
+            cpu = parts[1].replace("m", "")
+            mem = parts[2].replace("Mi", "")
 
             try:
-                cpu=int(cpu)
-                mem=int(mem)
+                cpu = int(cpu)
+                mem = int(mem)
             except:
                 continue
 
+            # -------------------------
+            # CPU anomaly
+            # -------------------------
+
             if cpu > 500:
-                print(
-                  f"HIGH CPU anomaly: {pod}"
-                )
+                print(f"HIGH CPU anomaly: {pod}")
+
+                # 🔥 feed correlation system (first-seen only)
+                if service not in FAILURE_TRACKER:
+                    FAILURE_TRACKER[service] = time.time()
+
+                print(f"Prediction: {service} may degrade soon (CPU spike)")
+
+            # -------------------------
+            # Memory anomaly
+            # -------------------------
 
             if mem > 500:
-                print(
-                  f"HIGH MEMORY anomaly: {pod}"
-                )
+                print(f"HIGH MEMORY anomaly: {pod}")
+
+                if service not in FAILURE_TRACKER:
+                    FAILURE_TRACKER[service] = time.time()
+
+                print(f"Prediction: {service} may degrade soon (Memory spike)")
 
     except:
-        print(
-          "Metrics server unavailable"
-        )
+        print("Metrics server unavailable")
 
 
     # -------------------------
@@ -232,24 +249,34 @@ def check_metrics():
     try:
 
         out = subprocess.check_output(
-            [
-             "kubectl",
-             "get",
-             "pods"
-            ]
-        ).decode()
+            ["kubectl", "get", "pods"]
+        ).decode().splitlines()
 
-        if "CrashLoopBackOff" in out:
+        for line in out[1:]:
 
-            print(
-             "ANOMALY: CrashLoopBackOff detected"
-            )
+            parts = line.split()
 
-        if "OOMKilled" in out:
+            if len(parts) < 3:
+                continue
 
-            print(
-             "ANOMALY: OOMKilled detected"
-            )
+            pod = parts[0]
+            status = parts[2]
+
+            service = pod.split("-")[0]
+
+            if "CrashLoopBackOff" in status:
+
+                print(f"ANOMALY: {pod} in CrashLoopBackOff")
+
+                if service not in FAILURE_TRACKER:
+                    FAILURE_TRACKER[service] = time.time()
+
+            if "OOMKilled" in line:
+
+                print(f"ANOMALY: {pod} OOMKilled")
+
+                if service not in FAILURE_TRACKER:
+                    FAILURE_TRACKER[service] = time.time()
 
     except:
         pass
@@ -295,8 +322,8 @@ def restart(service, cause="health_check"):
         log_evaluation(
             service,
             cause,
-            "N/A",
-            "N/A",
+            classify_fault(cause),
+            get_confidence(cause, service),
             "restart",
             True,
             recovery_time
@@ -324,8 +351,8 @@ def restart(service, cause="health_check"):
         log_evaluation(
             service,
             cause,
-            "N/A",
-            "N/A",
+            classify_fault(cause),
+            get_confidence(cause, service),
             "restart",
             False,
             recovery_time
@@ -438,9 +465,9 @@ def scale_up(service):
 
         log_evaluation(
             service,
-            "N/A",
-            "N/A",
-            "N/A",
+            "scale_trigger",
+            "resource_action",
+            "MEDIUM",
             "scale_up",
             True,
             recovery_time
@@ -454,9 +481,9 @@ def scale_up(service):
 
         log_evaluation(
             service,
-            "N/A",
-            "N/A",
-            "N/A",
+            "scale_trigger",
+            "resource_action",
+            "MEDIUM",
             "scale_up",
             False,
             recovery_time
@@ -504,9 +531,9 @@ def rollback(service):
 
         log_evaluation(
             service,
-            "N/A",
-            "N/A",
-            "N/A",
+            "rollback_trigger",
+            "deployment_fault",
+            "MEDIUM",
             "rollback",
             True,
             recovery_time
@@ -520,9 +547,9 @@ def rollback(service):
 
         log_evaluation(
             service,
-            "N/A",
-            "N/A",
-            "N/A",
+            "rollback_trigger",
+            "deployment_fault",
+            "MEDIUM",
             "rollback",
             False,
             recovery_time
@@ -613,12 +640,9 @@ def log_evaluation(service, cause, fault, confidence, action, success, recovery_
     except Exception as e:
         print("Evaluation logging failed:", e)
 
-
 def main():
 
-    print(
-      "Starting Dependency-Aware Auto-Remediation..."
-    )
+    print("Starting Dependency-Aware Auto-Remediation...")
 
     while True:
 
@@ -627,122 +651,120 @@ def main():
             # -------------------
             # Metrics layer
             # -------------------
-
             check_metrics()
-
 
             # -------------------
             # Health layer
             # -------------------
-
             check_and_fix_services()
-
 
             # -------------------
             # Log-based RCA
             # -------------------
-
             ts = get_latest_timestamp()
 
             if ts is None:
-
-                print(
-                  "No logs yet"
-                )
-
+                print("No logs yet")
                 time.sleep(5)
-
                 continue
-
 
             result = run_rca(ts)
 
+            cause = result.get("inferred_cause", "Unknown")
 
-            cause = result.get(
-                "inferred_cause",
-                "Unknown"
-            )
-
-
-            print(
-              "\n--- RCA RESULT ---"
-            )
-
-            print(
-              "Cause:",
-              cause
-            )
-
+            print("\n--- RCA RESULT ---")
+            print("Cause:", cause)
+            trace(f"RCA cause → {cause}")
 
             # -------------------
             # Fault classification
             # -------------------
+            fault = classify_fault(cause)
 
-            fault = classify_fault(
-                cause
-            )
-
-            print(
-                "Fault Class:",
-                fault
-            )
+            print("Fault Class:", fault)
+            trace(f"Fault classified as → {fault}")
 
             # -------------------
             # Service resolution
             # -------------------
+            service = fix_from_cause(cause)
 
-            service = fix_from_cause(
-                cause
-            )
-            # 🔥 force root dependency resolution
-            if service:
+            # -------------------
+            # Detect external case
+            # -------------------
+            c = (cause or "").lower()
+
+            external_issue = False
+
+            if (
+                "metadata" in c
+                or "169.254" in c
+                or "dns" in c
+                or "external" in c
+                or "connection refused" in c
+                or "connection error" in c
+                or "unable to connect" in c
+            ):
+                external_issue = True
+
+
+
+            trace(f"Initial service from cause mapping → {service}")
+
+            # -------------------
+            # Dependency resolution
+            # -------------------
+
+            if not service:
+                service = "unresolved"
+
+            elif external_issue:
+                trace("Dependency resolution skipped due to external issue")
+
+            else:
                 root = get_root_dependency(service)
 
                 if root != service:
                     print(f"{service} depends on {root} → fixing dependency first")
+                    trace(f"Dependency override → {service} → {root}")
                     service = root
 
-            if not service:
 
-                service = "unresolved"
-
-
-            print(
-                "DEBUG service:",
-                service
-            )
+            print("DEBUG service:", service)
+            trace(f"After dependency resolution → {service}")
 
 
+
+            # -------------------
+            # Correlation (incident-level)
+            # -------------------
             if service != "unresolved":
-
-                correlated = check_incident_correlation(
-                    service,
-                    fault
-                )
-
-                if correlated:
-
-                    print(
-                        "Incident correlation active"
-                    )
-
+                correlated_flag = check_incident_correlation(service, fault)
+                if correlated_flag:
+                    print("Incident correlation active")
+                    trace(f"Incident correlation signal detected for {service}")
 
             # -------------------
             # Causal correlation (time + deps)
             # -------------------
             correlated = select_root_cause(
                 service,
+                cause,
                 FAILURE_TRACKER,
                 DEPENDENCY_GRAPH
             )
 
             if correlated != service:
                 print(f"Correlation override: {service} → {correlated}")
+                trace(f"Causal correlation override → {service} → {correlated}")
                 service = correlated
+            else:
+                trace(f"Causal correlation kept service → {service}")
 
+            trace(f"Final service after correlation → {service}")
 
             # -------------------
-            # Track first-seen failure (do NOT overwrite)
+            # Track first-seen failure
             # -------------------
             if (
                 service
@@ -752,118 +774,89 @@ def main():
                 if service not in FAILURE_TRACKER:
                     FAILURE_TRACKER[service] = time.time()
 
-
             # -------------------
-            # Confidence-aware gating
+            # Confidence
             # -------------------
+            confidence = get_confidence(cause, service)
 
-            confidence = get_confidence(
-                cause,
-                service
-            )
-
-            # -------------------
-            # Incident tracking (create)
-            # -------------------
-
-            if (
-                service != "unresolved"
-                and "no issue detected" not in cause.lower()
-                and confidence != "LOW"
-            ):
-                create_incident_if_not_exists(
-                    service,
-                    cause,
-                    fault
-                )
-
-            print(
-               "Confidence:",
-               confidence
-            )
-
-
-            if confidence == "LOW":
-
-                print(
-                  "Low confidence -> no auto-remediation"
-                )
-
-                time.sleep(10)
-
-                continue
-
+            print("Confidence:", confidence)
+            trace(f"Confidence decision → {confidence}")
 
             # -------------------
             # Deduplication
             # -------------------
-
             if "no issue detected" not in cause.lower():
 
-                # 🔴 First observation → do nothing
                 if not is_duplicate_incident(service, cause):
-
                     print("First observation → waiting for confirmation")
-
+                    trace("Dedup: first observation → waiting (no action)")
                     time.sleep(5)
                     continue
+                else:
+                    trace("Dedup: confirmed incident → proceeding")
 
+            # -------------------
+            # Confidence gate
+            # -------------------
+            if confidence == "LOW":
+                print("Low confidence -> no auto-remediation")
+                trace("Confidence LOW → skipping remediation")
+                time.sleep(10)
+                continue
+
+            # -------------------
+            # Incident tracking
+            # -------------------
+            if (
+                service != "unresolved"
+                and "no issue detected" not in cause.lower()
+            ):
+                create_incident_if_not_exists(service, cause, fault)
 
             # -------------------
             # Unresolved guard
             # -------------------
-
             if service == "unresolved":
-
-                print(
-                  "No action needed"
-                )
-
+                print("No action needed")
+                trace("Service unresolved → skipping action")
                 time.sleep(10)
-
                 continue
 
-
             # -------------------
-            # Remediation
+            # Cooldown check
             # -------------------
-
-            # 🔥 cooldown check BEFORE action
             if in_cooldown(service):
+                trace(f"Cooldown active for {service} → skipping")
                 time.sleep(5)
                 continue
 
-            print(
-              f"{service} -> restarting "
-              "(dependency-aware recovery)"
-            )
+            # -------------------
+            # Action selection
+            # -------------------
+            trace(f"Evaluating best action for service → {service}")
 
             best_action = get_best_action(service)
 
             print(f"Adaptive decision: {best_action}")
+            trace(f"Action chosen → {best_action} (based on history)")
+
+            # -------------------
+            # Execute action
+            # -------------------
+            trace(f"Executing action → {best_action} on {service}")
 
             if best_action == "scale_up":
                 scale_up(service)
-
             else:
                 restart(service, cause)
 
             print("\nWaiting...\n")
-
             time.sleep(10)
 
-
         except Exception as e:
-
-            print(
-              "Error:",
-              e
-            )
-
+            print("Error:", e)
             time.sleep(5)
 
 
-
 if __name__ == "__main__":
-
     main()
