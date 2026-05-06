@@ -23,6 +23,8 @@ engine = create_engine(
     "postgresql://loguser:password@localhost:5432/logdb"
 )
 
+LAST_DOWN_SERVICE = None
+
 CORRELATED_EVENTS = []
 CORRELATION_WINDOW = 120
 
@@ -289,6 +291,7 @@ def restart(service, cause="health_check"):
 
     start_time = time.time()
 
+
     subprocess.run(
         [
             "kubectl",
@@ -379,8 +382,9 @@ def get_all_deployments():
     except:
         return []
 
-
 def check_and_fix_services():
+
+    global LAST_DOWN_SERVICE   # ✅ ADD THIS
 
     monitored = get_all_deployments()
 
@@ -395,16 +399,14 @@ def check_and_fix_services():
                 now - LAST_RESTART[svc] < RESTART_COOLDOWN
             ):
 
-                print(
-                    f"{svc} restart cooldown active"
-                )
-
+                print(f"{svc} restart cooldown active")
                 continue
 
             print("\n--- HEALTH CHECK ---")
-            print(
-                f"{svc} is DOWN → restarting"
-            )
+            print(f"{svc} is DOWN → restarting")
+
+            # ✅ ADD THIS LINE (critical)
+            LAST_DOWN_SERVICE = svc
 
             if prefer_scale_first(svc):
 
@@ -674,6 +676,30 @@ def main():
 
             cause = result.get("inferred_cause", "Unknown")
 
+            # -------------------
+            # Inject health signal into RCA
+            # -------------------
+            global LAST_DOWN_SERVICE
+
+            if LAST_DOWN_SERVICE:
+
+                health_cause = f"{LAST_DOWN_SERVICE} service is down"
+
+                trace(f"Health signal injected → {health_cause}")
+
+                # -------------------
+                # Combine signals (NEW)
+                # -------------------
+                if cause and "no issue detected" not in cause.lower():
+                    cause = f"{health_cause} | {cause}"
+                else:
+                    cause = health_cause
+
+                LAST_DOWN_SERVICE = None
+
+            llm_service = result.get("llm_service", "unknown")
+            trace(f"LLM suggested service → {llm_service}")
+
             print("\n--- RCA RESULT ---")
             print("Cause:", cause)
             trace(f"RCA cause → {cause}")
@@ -692,7 +718,8 @@ def main():
             service, decision_trace = resolve_final_service(
                 cause,
                 FAILURE_TRACKER,
-                DEPENDENCY_GRAPH
+                DEPENDENCY_GRAPH,
+                llm_service=llm_service
             )
 
             print("DEBUG service:", service)
@@ -730,17 +757,25 @@ def main():
                 continue
             
             # -------------------
-            # Deduplication
+            # Deduplication (Phase 13 fix)
             # -------------------
-            if "no issue detected" not in cause.lower():
+            if confidence != "HIGH":
 
-                if not is_duplicate_incident(service, cause) and "no logs" not in cause.lower():
-                    print("First observation → waiting for confirmation")
-                    trace("Dedup: first observation → waiting (no action)")
-                    time.sleep(5)
-                    continue
-                else:
-                    trace("Dedup: confirmed incident → proceeding")
+                if (
+                    "no issue detected" not in cause.lower()
+                    and "no logs" not in cause.lower()
+                ):
+
+                    if not is_duplicate_incident(service, cause):
+                        print("First observation → waiting for confirmation")
+                        trace("Dedup: first observation → waiting (no action)")
+                        time.sleep(5)
+                        continue
+                    else:
+                        trace("Dedup: confirmed incident → proceeding")
+
+            else:
+                trace("High confidence → skipping dedup, acting immediately")
 
 
             # -------------------
@@ -760,6 +795,25 @@ def main():
                 trace("Service unresolved → skipping action")
                 time.sleep(10)
                 continue
+            
+            # -------------------
+            # RCA Remediation (Phase 14)
+            # -------------------
+
+            best_action = get_best_action(service)
+
+            print(f"Adaptive decision: {best_action}")
+
+            if best_action == "scale_up":
+                scale_up(service)
+            else:
+                restart(service, cause)
+
+            print("\nWaiting...\n")
+
+            time.sleep(10)
+
+            continue
 
             # -------------------
             # Cooldown check

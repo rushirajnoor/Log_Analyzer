@@ -34,48 +34,70 @@ DEPENDENCY_GRAPH = {
     "redis-cart": []
 }
 
-
 def get_best_action(service):
 
+    import pandas as pd
+    from sqlalchemy import create_engine
+    import random
+
+    engine = create_engine("postgresql://loguser:password@localhost:5432/logdb")
+
     try:
-        with engine.begin() as conn:
+        df = pd.read_sql(f"""
+            SELECT action, verification
+            FROM remediation_history
+            WHERE service = '{service}'
+        """, engine)
 
-            result = conn.execute(
-                text(
-                    """
-                    SELECT action, COUNT(*) as cnt
-                    FROM remediation_history
-                    WHERE service=:svc
-                    AND verification='success'
-                    GROUP BY action
-                    """
-                ),
-                {"svc": service}
-            ).fetchall()
+        df["action"] = df["action"].str.replace(r"restart.*", "restart", regex=True)
 
-            if not result:
-                return "restart"
-
-            action_counts = {
-                row[0]: row[1] for row in result
-            }
-
-            best_action = max(
-                action_counts,
-                key=action_counts.get
-            )
-
-            if "scale" in best_action:
-                return "scale_up"
-
-            if "restart" in best_action:
-                return "restart"
-
+        if df.empty:
             return "restart"
 
-    except:
-        return "restart"
+        # -------------------
+        # Compute success rate
+        # -------------------
+        stats = df.groupby("action").agg(
+            success_rate=("verification", lambda x: (x == "success").mean()),
+            count=("verification", "count")
+        ).reset_index()
 
+        # -------------------
+        # Filter weak data
+        # -------------------
+        stats = stats[stats["count"] >= 2]
+
+        if stats.empty:
+            return "restart"
+
+        # -------------------
+        # Choose best action
+        # -------------------
+        # -------------------
+        # Apply scale penalty
+        # -------------------
+        stats["score"] = stats["success_rate"] - (stats["action"] == "scale_up") * 0.1
+
+        best = stats.sort_values(by="score", ascending=False).iloc[0]
+        best_action = best["action"]
+
+
+        # -------------------
+        # Exploration (fixed)
+        # -------------------
+        if random.random() < 0.1:
+            alternate = "scale_up" if best_action == "restart" else "restart"
+            print(f"Exploration: trying alternate action → {alternate}")
+            return alternate
+
+        print(f"Learning stats for {service}:")
+        print(stats)
+
+        return best_action
+
+    except Exception as e:
+        print("Learning error:", e)
+        return "restart"
 
 def get_all_pods():
     try:
@@ -101,71 +123,62 @@ def is_service_running(service_name):
             return True
     return False
 
-
 def classify_fault(cause):
 
     c = (cause or "").lower()
 
+    # -------------------
+    # 1. Direct service down (highest priority)
+    # -------------------
+    if "service is down" in c:
+        return "service_failure"
+
+    # -------------------
+    # 2. Dependency failures
+    # -------------------
     if (
-        "frontend requests" in c
-        or "frontend service" in c
-        or "requests are failing" in c
+        "dependency" in c
+        or "backend" in c
+        or "connection refused" in c
+        or "timeout" in c
+        or "unavailable" in c
     ):
         return "dependency_failure"
 
-    if (
-        "cannot connect to redis" in c
-        or "dependency" in c
-        or "redis down" in c
-    ):
-        return "dependency_failure"
-
-
+    # -------------------
+    # 3. Resource issues
+    # -------------------
     if (
         "high cpu" in c
-        or "heavy load" in c
-        or "oomkilled" in c
+        or "high memory" in c
+        or "oom" in c
     ):
-        return "resource_exhaustion"
+        return "resource_failure"
 
-
-    if (
-        "rollout" in c
-        or "deployment failed" in c
-        or "config" in c
-    ):
-        return "deployment_fault"
-
-
+    # -------------------
+    # 4. Network / external issues
+    # -------------------
     if (
         "dns" in c
         or "network" in c
+        or "external" in c
+        or "metadata" in c
     ):
-        return "network_fault"
+        return "network_failure"
 
-    
+    # -------------------
+    # 5. No issue / noise
+    # -------------------
     if (
-        "timeout" in c
-        or "endpoint unreachable" in c
+        "no issue detected" in c
+        or "no logs" in c
     ):
-        return "network_fault"
+        return "unknown_fault"
 
-
-    if (
-        "maintenance" in c
-    ):
-        return "service_maintenance"
-
-
-    if (
-        "request error" in c
-        or "unknown request error" in c
-    ):
-        return "dependency_failure"
-
-
+    # -------------------
+    # fallback
+    # -------------------
     return "unknown_fault"
-
 
 
 def had_past_success(service):
@@ -200,25 +213,28 @@ def had_past_success(service):
 
 def get_confidence(cause, service):
 
-    score = 0
-
     c = (cause or "").lower()
 
+    # -------------------
+    # STRONG SIGNAL (Phase 13 fix)
+    # -------------------
+    if "service is down" in c:
+        print("Confidence signal: service down (strong)")
+        return "HIGH"
+
+    score = 0
 
     # -------------------
     # Signal 1:
     # Cause strength
     # -------------------
-
     if (
         "cannot connect to redis" in c
         or "redis down" in c
         or "redis not responding" in c
         or "redis service is not responding" in c
-        or "service down" in c
     ):
         score += 4
-
 
     if (
         "request errors" in c
@@ -228,94 +244,49 @@ def get_confidence(cause, service):
     ):
         score += 3
 
-
     # -------------------
     # Signal 2:
     # Health evidence
     # -------------------
-
     if (
         service
         and service != "unresolved"
         and not is_service_running(service)
     ):
-
-        print(
-            "Confidence signal: service down"
-        )
-
+        print("Confidence signal: service down")
         score += 3
-
 
     # -------------------
     # Signal 3:
     # Metrics anomalies
     # -------------------
-
     try:
-
         out = subprocess.check_output(
-            [
-             "kubectl",
-             "get",
-             "pods"
-            ]
+            ["kubectl", "get", "pods"]
         ).decode()
 
         if "CrashLoopBackOff" in out:
-
-            print(
-              "Confidence signal: CrashLoopBackOff"
-            )
-
+            print("Confidence signal: CrashLoopBackOff")
             score += 3
 
-
         if "OOMKilled" in out:
-
-            print(
-              "Confidence signal: OOMKilled"
-            )
-
+            print("Confidence signal: OOMKilled")
             score += 3
 
     except:
         pass
 
-
     # -------------------
-    # Signal 4:
-    # Historical support
+    # FINAL DECISION
     # -------------------
+    print("Confidence score:", score)
 
-    if service and had_past_success(service):
-
-        print(
-          "Confidence signal: past success"
-        )
-
-        score += 3
-
-
-    # -------------------
-    # Final mapping
-    # -------------------
-
-    print(
-       "Confidence score:",
-       score
-    )
-
-
-    if score >= 7:
+    if score >= 6:
         return "HIGH"
-
     elif score >= 3:
         return "MEDIUM"
-
     else:
         return "LOW"
-
 
 
 def is_duplicate_incident(service, cause):
@@ -547,7 +518,7 @@ def fix_from_cause(cause):
     return service
 
 
-def resolve_final_service(cause, failure_tracker, dependency_graph):
+def resolve_final_service(cause, failure_tracker, dependency_graph,llm_service=None):
 
     trace_steps = []
 
@@ -556,8 +527,31 @@ def resolve_final_service(cause, failure_tracker, dependency_graph):
     # -------------------
     # STEP 1: initial mapping
     # -------------------
-    service = fix_from_cause(cause)
-    trace_steps.append(f"Initial mapping → {service}")
+    rule_service = fix_from_cause(cause)
+
+    # -------------------
+    # LLM-assisted decision
+    # -------------------
+    service = rule_service
+
+    if llm_service and llm_service != "unknown":
+
+        if not rule_service:
+            service = llm_service
+            trace_steps.append(f"LLM used (no rule match) → {llm_service}")
+
+        elif llm_service == rule_service:
+            trace_steps.append(f"LLM agrees with rule → {rule_service}")
+
+        else:
+            # 🔥 NEW: allow LLM override if rule is weak
+            if "unknown" in (rule_service or ""):
+                service = llm_service
+                trace_steps.append(f"LLM override (weak rule) → {llm_service}")
+            else:
+                trace_steps.append(
+                    f"LLM suggests {llm_service} but rule chose {rule_service} → keeping rule"
+                )
 
     if not service:
         return "unresolved", trace_steps

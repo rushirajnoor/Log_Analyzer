@@ -32,20 +32,32 @@ def run_rca(timestamp):
     if df.empty:
 
         return {
-            "inferred_cause":
-            "No logs"
+            "inferred_cause": ""
         }
 
 
+
     # -------------------
-    # Use ERROR + WARNING
+    # Broader anomaly detection
     # -------------------
 
     relevant_logs = df[
-        df["level"].isin(
-           ["ERROR","WARNING"]
-        )
+        df["level"].isin(["ERROR", "WARNING"])
     ]
+
+    # fallback: detect error keywords even in INFO
+    if relevant_logs.empty:
+
+        keyword_logs = df[
+            df["message"].str.contains(
+                "error|fail|timeout|refused|unavailable",
+                case=False,
+                na=False
+            )
+        ]
+
+        if not keyword_logs.empty:
+            relevant_logs = keyword_logs
 
 
     if relevant_logs.empty:
@@ -54,6 +66,7 @@ def run_rca(timestamp):
             "inferred_cause":
             "No issue detected"
         }
+    
 
 
     # -------------------
@@ -143,6 +156,7 @@ def run_rca(timestamp):
 
     return {
 
-        "inferred_cause":
-        cause
+        "inferred_cause": cause,
+        "llm_service": result.get("service", "unknown")
+
     }
