@@ -9,3 +9,4 @@ numpy
 redis
 streamlit
 streamlit-autorefresh
+plotly
