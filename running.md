@@ -178,3 +178,8 @@ minikube stop
 TRUNCATE logs RESTART IDENTITY;
 TRUNCATE remediation_history RESTART IDENTITY;
 
+## show logs:
+
+```bash
+python3
+```
