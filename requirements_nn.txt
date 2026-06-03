@@ -1,0 +1,35 @@
+# Neural Network Log Analyzer — Dependencies
+# Install: pip install -r requirements_nn.txt
+
+# ── Deep Learning Framework ──
+torch>=2.0.0
+torchvision>=0.15.0
+
+# ── Graph Neural Networks ──
+torch-geometric>=2.4.0
+
+# ── Log Template Extraction ──
+drain3>=0.9.11
+
+# ── Data Processing ──
+pandas>=2.0.0
+numpy>=1.24.0
+pyarrow>=12.0.0          # Parquet support
+scikit-learn>=1.3.0
+
+# ── Experiment Tracking & Visualization ──
+tensorboard>=2.14.0
+umap-learn>=0.5.4        # For embedding visualization
+matplotlib>=3.7.0
+seaborn>=0.12.0
+
+# ── Existing dependencies (keep) ──
+fastapi
+uvicorn
+requests
+sqlalchemy
+psycopg2-binary
+redis
+streamlit
+streamlit-autorefresh
+plotly
