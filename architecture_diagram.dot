@@ -1,0 +1,207 @@
+digraph G {
+    fontname="Helvetica,Arial,sans-serif"
+    node [fontname="Helvetica,Arial,sans-serif", shape=box, style="filled,rounded", fontsize=24, margin="0.3,0.15"]
+    edge [fontname="Helvetica,Arial,sans-serif", fontsize=20, penwidth=2]
+    
+    // Graph settings for A4 size (approx 8.27 x 11.69 inches)
+    size="8.27,11.69"
+    ratio="fill"
+    nodesep=0.5
+    ranksep=0.8
+    splines=spline
+    compound=true
+
+    subgraph cluster_infra {
+        label="Cloud-Native Kubernetes\nInfrastructure"
+        fontsize=28
+        style="filled,rounded"
+        color="#fdeedb" // Light orange
+        fontcolor="black"
+
+        node [fillcolor="#fdf6e3"]
+        checkoutservice
+        paymentservice
+        recommendationservice
+        shippingservice
+        currencyservice
+        emailservice
+        adservice
+        loadgenerator
+
+        node [fillcolor="#e0e0e0"]
+        frontend [label="frontend\nHTTP 500"]
+        cartservice [label="cartservice\nTimeouts"]
+        rediscart [label="redis-cart\nROOT CAUSE"]
+        
+        frontend -> cartservice [label="depends on", fontsize=16]
+        cartservice -> rediscart [label="depends on", fontsize=16]
+    }
+
+    subgraph cluster_obs {
+        label="Observability & Telemetry\nPipeline"
+        fontsize=28
+        style="filled,rounded"
+        color="#dbe6fb" // Light blue
+        
+        node [fillcolor="#f8f9fa"]
+        log_pipeline [label="Distributed Log Pipeline\nkubectl logs -f"]
+        json_parser [label="JSON Parser"]
+        rate_limiter [label="Rate Limiter"]
+        severity_filter [label="Severity Filter"]
+        incident_signals [label="Incident Signals"]
+        
+        metrics_engine [label="Metrics Engine"]
+        health_checks [label="Health Checks"]
+
+        log_pipeline -> json_parser -> rate_limiter -> severity_filter -> incident_signals
+    }
+
+    subgraph cluster_rca {
+        label="Autonomous Operational\nHybrid RCA Engine"
+        fontsize=28
+        style="filled,rounded"
+        color="#edf2d8" // Light green/yellow
+        
+        subgraph cluster_ai {
+            label="AI Inference"
+            fontsize=24
+            style="filled,rounded"
+            color="#d3eaf2"
+            
+            inference_gw [label="Inference Gateway", fillcolor="#f8f9fa"]
+            qwen [label="Qwen 2.5 via Ollama", fillcolor="#f8f9fa"]
+            inference_gw -> qwen
+        }
+
+        node [fillcolor="#e0f7fa"]
+        log_extractor [label="Log Signal Extractor"]
+        pattern_match [label="Pattern Matching"]
+        service_context [label="Service Aware Context"]
+        dep_correlation [label="Dependency Correlation"]
+        fault_class [label="Fault Classification"]
+
+        log_extractor -> pattern_match -> service_context -> dep_correlation -> fault_class
+    }
+
+    subgraph cluster_decision {
+        label="Decision & Learning Engine"
+        fontsize=28
+        style="filled,rounded"
+        color="#e4f2d8" // Light green
+        
+        node [fillcolor="#f1f8e9"]
+        dep_graph [label="Dependency Graph"]
+        dup_detect [label="Duplicate Detection"]
+        conf_score [label="Confidence Scoring"]
+        action_selector [label="Adaptive Action Selector"]
+        op_learning [label="Operational Learning"]
+
+        dep_graph -> dup_detect -> action_selector
+        conf_score -> action_selector
+        action_selector -> op_learning [style="dashed"]
+    }
+
+    subgraph cluster_recovery {
+        label="Autonomous Recovery"
+        fontsize=28
+        style="filled,rounded"
+        color="#fae1e6" // Light pink
+        
+        node [fillcolor="#fce4ec", shape=ellipse]
+        k_restart [label="kubectl restart"]
+        k_scale [label="kubectl scale"]
+        k_undo [label="kubectl rollout undo"]
+        
+        node [shape=box, style="filled,rounded"]
+        recovery_verif [label="Recovery Verification"]
+        inc_lifecycle [label="Incident Lifecycle"]
+        esc_handling [label="Escalation Handling"]
+        
+        k_restart -> recovery_verif
+        k_scale -> recovery_verif
+        k_undo -> recovery_verif
+        
+        recovery_verif -> inc_lifecycle -> esc_handling
+    }
+
+    subgraph cluster_memory {
+        label="Operational Memory"
+        fontsize=28
+        style="filled,rounded"
+        color="#fae1e6"
+        
+        node [fillcolor="#f8f9fa", shape=ellipse]
+        mem_logs [label="logs"]
+        mem_rem [label="remediation_history"]
+        mem_inc [label="incidents"]
+        mem_eval [label="evaluation_logs"]
+        
+        node [shape=box, fillcolor="#f8f9fa"]
+        postgres [label="PostgreSQL", shape=cylinder, height=1.5]
+        
+        mem_logs -> postgres
+        mem_rem -> postgres
+        mem_inc -> postgres
+        mem_eval -> postgres
+    }
+
+    subgraph cluster_viz {
+        label="Visualization & Operational\nIntelligence Surface"
+        fontsize=28
+        style="filled,rounded"
+        color="#faeed6" // Light orange
+        
+        dashboard [label="Real-Time AIOps Dashboard", fillcolor="#fff3e0"]
+        
+        node [fillcolor="#fff8e1"]
+        viz_timeline [label="Incident Timeline"]
+        viz_analytics [label="Recovery Analytics"]
+        viz_trace [label="RCA Trace Visualization"]
+        viz_metrics [label="Infrastructure Metrics"]
+        
+        dashboard -> {viz_timeline, viz_analytics, viz_trace, viz_metrics}
+    }
+
+    // Connections between layers
+    checkoutservice -> log_pipeline
+    paymentservice -> log_pipeline
+    recommendationservice -> log_pipeline
+    shippingservice -> log_pipeline
+    currencyservice -> log_pipeline
+    emailservice -> log_pipeline
+    adservice -> log_pipeline
+    loadgenerator -> log_pipeline
+    
+    frontend -> log_pipeline
+    cartservice -> log_pipeline
+    rediscart -> log_pipeline
+
+    rediscart -> metrics_engine [style="dashed"]
+    rediscart -> health_checks [style="dashed"]
+
+    log_pipeline -> mem_logs [style="dashed"]
+
+    incident_signals -> log_extractor [style="dashed"]
+    
+    log_extractor -> inference_gw [style="dashed"]
+    qwen -> pattern_match [style="dashed"]
+
+    fault_class -> dep_graph
+    
+    metrics_engine -> conf_score
+    health_checks -> conf_score
+
+    action_selector -> k_restart [style="dashed"]
+    action_selector -> k_scale [style="dashed"]
+    action_selector -> k_undo [style="dashed"]
+
+    action_selector -> mem_rem [style="dashed"]
+    op_learning -> mem_eval [style="dashed"]
+    inc_lifecycle -> mem_inc [style="dashed"]
+
+    postgres -> dashboard
+    
+    // Feedback loops
+    postgres -> op_learning [label="Historical Outcomes", style="dashed", fontsize=16]
+    postgres -> action_selector [label="Adaptive Optimization", style="dashed", fontsize=16]
+}
